@@ -1,9 +1,18 @@
 use alloc::{format, string::String, vec, vec::Vec};
+use ::core::time::Duration;
 
 use jetbeep::bus::KeypadKey;
+use jetbeep::{executor, workq};
 use jetbeep_lvgl_dsl::prelude::{Obj, Widget};
 
-use crate::core::{event::AppEvent, nav::Stack, route::Route};
+use crate::core::{
+    app_dispatcher::post_app_event,
+    event::{AppEvent, LockTarget},
+    nav::Stack,
+    route::Route,
+};
+
+const MAX_LOCK_LINES: usize = 10;
 
 pub struct App {
     route_stack: Stack<Route>,
@@ -12,6 +21,24 @@ pub struct App {
     keypad_has_letters: bool,
     keypad_pressed_mask: u32,
     keypad_last_pressed: Option<KeypadKey>,
+    lock_targets: Vec<LockTarget>,
+    lock_open_all_running: bool,
+    lock_open_all_total: u32,
+    lock_open_all_opened: u32,
+    lock_open_all_ok: u32,
+    lock_open_all_err: u32,
+    lock_open_all_lines: Vec<String>,
+    lock_open_specific_board_input: String,
+    lock_open_specific_lock_input: String,
+    lock_open_specific_board_id: Option<u32>,
+    lock_open_specific_running: bool,
+    lock_open_specific_status: String,
+    lock_statuses_board_input: String,
+    lock_statuses_running: bool,
+    lock_statuses_input_status: String,
+    lock_statuses_result_status: String,
+    barcode_status: String,
+    barcode_last_text: String,
 }
 
 impl App {
@@ -25,6 +52,24 @@ impl App {
             keypad_has_letters: false,
             keypad_pressed_mask: 0,
             keypad_last_pressed: None,
+            lock_targets: Vec::new(),
+            lock_open_all_running: false,
+            lock_open_all_total: 0,
+            lock_open_all_opened: 0,
+            lock_open_all_ok: 0,
+            lock_open_all_err: 0,
+            lock_open_all_lines: Vec::new(),
+            lock_open_specific_board_input: String::new(),
+            lock_open_specific_lock_input: String::new(),
+            lock_open_specific_board_id: None,
+            lock_open_specific_running: false,
+            lock_open_specific_status: String::from("Enter board_id"),
+            lock_statuses_board_input: String::new(),
+            lock_statuses_running: false,
+            lock_statuses_input_status: String::from("Enter board_id"),
+            lock_statuses_result_status: String::from("No result yet"),
+            barcode_status: String::from("Scanner stopped"),
+            barcode_last_text: String::from("-"),
         }
     }
 
@@ -32,11 +77,17 @@ impl App {
         match event {
             AppEvent::Open(route) => {
                 self.reset_submenu_state(route);
+                if route == Route::BarcodeScannerTest {
+                    self.start_barcode_scanner();
+                }
                 self.route_stack.push(route);
                 self.render();
             }
             AppEvent::Back => {
                 if self.route_stack.len() > 1 {
+                    if self.current_route() == Route::BarcodeScannerTest {
+                        self.stop_barcode_scanner();
+                    }
                     self.route_stack.pop();
                     self.render();
                 }
@@ -51,6 +102,87 @@ impl App {
             AppEvent::KeypadLayoutLoaded(has_letters) => {
                 self.keypad_has_letters = has_letters;
                 self.render();
+            }
+            AppEvent::LockTargetsLoaded(targets) => {
+                self.lock_targets = targets;
+                self.lock_open_all_total = self.lock_targets.len() as u32;
+                self.render();
+            }
+            AppEvent::LockOpenAll => self.start_open_all_locks(),
+            AppEvent::LockOpenAllStepResult {
+                board_id,
+                lock_id,
+                ok,
+                message,
+                index,
+                total,
+            } => {
+                if ok {
+                    self.lock_open_all_ok = self.lock_open_all_ok.saturating_add(1);
+                } else {
+                    self.lock_open_all_err = self.lock_open_all_err.saturating_add(1);
+                }
+
+                self.lock_open_all_opened = (index + 1) as u32;
+                self.lock_open_all_total = total as u32;
+                self.push_lock_open_all_line(format!(
+                    "{}:{} {} ({})",
+                    board_id,
+                    lock_id,
+                    if ok { "OK" } else { "ERROR" },
+                    message
+                ));
+                self.render();
+            }
+            AppEvent::LockOpenAllFinished => {
+                self.lock_open_all_running = false;
+                self.push_lock_open_all_line(format!(
+                    "Done: {} OK, {} ERROR",
+                    self.lock_open_all_ok,
+                    self.lock_open_all_err
+                ));
+                self.render();
+            }
+            AppEvent::LockOpenSpecificResult {
+                board_id,
+                lock_id,
+                ok,
+                message,
+            } => {
+                self.lock_open_specific_running = false;
+                if ok {
+                    self.lock_open_specific_lock_input.clear();
+                }
+                self.lock_open_specific_status = format!(
+                    "{}:{} {} ({})",
+                    board_id,
+                    lock_id,
+                    if ok { "OK" } else { "ERROR" },
+                    message
+                );
+                self.render();
+            }
+            AppEvent::LockStatusesResult {
+                board_id,
+                ok,
+                statuses,
+                message,
+            } => {
+                self.lock_statuses_running = false;
+                self.lock_statuses_result_status = if ok {
+                    self.format_lock_statuses(board_id, statuses)
+                } else {
+                    format!("Board {} ERROR ({})", board_id, message)
+                };
+                self.render();
+            }
+            AppEvent::BarcodeScanned(barcode) => {
+                if self.current_route() == Route::BarcodeScannerTest {
+                    self.barcode_last_text = barcode;
+                    self.barcode_status = String::from("Scanned. Restarting scanner...");
+                    self.restart_barcode_scanner();
+                    self.render();
+                }
             }
             AppEvent::Keypad(key) => self.handle_keypad(key),
         }
@@ -107,6 +239,156 @@ impl App {
         }
     }
 
+    pub fn lock_open_all_configured_count(&self) -> usize {
+        self.lock_targets.len()
+    }
+
+    pub fn lock_open_all_running(&self) -> bool {
+        self.lock_open_all_running
+    }
+
+    pub fn lock_open_all_summary_text(&self) -> String {
+        if self.lock_open_all_running {
+            return format!(
+                "Running: {}/{} | {} OK | {} ERROR",
+                self.lock_open_all_opened,
+                self.lock_open_all_total,
+                self.lock_open_all_ok,
+                self.lock_open_all_err
+            );
+        }
+
+        if self.lock_open_all_opened == 0 {
+            return String::from("Idle");
+        }
+
+        format!(
+            "Last run: {}/{} | {} OK | {} ERROR",
+            self.lock_open_all_opened,
+            self.lock_open_all_total,
+            self.lock_open_all_ok,
+            self.lock_open_all_err
+        )
+    }
+
+    pub fn lock_open_all_results_text(&self) -> String {
+        if self.lock_open_all_lines.is_empty() {
+            return String::from("No results yet");
+        }
+        self.lock_open_all_lines.join("\n")
+    }
+
+    pub fn lock_open_specific_board_input_text(&self) -> String {
+        if self.lock_open_specific_board_input.is_empty() {
+            return String::from("-");
+        }
+        self.lock_open_specific_board_input.clone()
+    }
+
+    pub fn lock_open_specific_lock_input_text(&self) -> String {
+        if self.lock_open_specific_lock_input.is_empty() {
+            return String::from("-");
+        }
+        self.lock_open_specific_lock_input.clone()
+    }
+
+    pub fn lock_open_specific_available_boards_text(&self) -> String {
+        let mut boards: Vec<u32> = Vec::new();
+        for t in &self.lock_targets {
+            if !boards.contains(&t.board_id) {
+                boards.push(t.board_id);
+            }
+        }
+        boards.sort_unstable();
+
+        if boards.is_empty() {
+            return String::from("Available boards: none");
+        }
+
+        let mut out = String::from("Available boards: ");
+        for (i, board_id) in boards.iter().enumerate() {
+            if i > 0 {
+                out.push(' ');
+            }
+            out.push_str(format!("{}", board_id).as_str());
+        }
+        out
+    }
+
+    pub fn lock_open_specific_available_locks_text(&self) -> String {
+        let Some(board_id) = self.lock_open_specific_board_id else {
+            return String::from("Available locks: select board first");
+        };
+
+        let mut locks: Vec<u32> = Vec::new();
+        for t in &self.lock_targets {
+            if t.board_id == board_id {
+                locks.push(t.lock_id);
+            }
+        }
+        locks.sort_unstable();
+
+        if locks.is_empty() {
+            return format!("Available locks on board {}: none", board_id);
+        }
+
+        let mut out = format!("Available locks on board {}: ", board_id);
+        for (i, lock_id) in locks.iter().enumerate() {
+            if i > 0 {
+                out.push(' ');
+            }
+            out.push_str(format!("{}", lock_id).as_str());
+        }
+        out
+    }
+
+    pub fn lock_open_specific_status_text(&self) -> String {
+        self.lock_open_specific_status.clone()
+    }
+
+    pub fn lock_open_specific_running(&self) -> bool {
+        self.lock_open_specific_running
+    }
+
+    pub fn lock_open_specific_board_has_input(&self) -> bool {
+        !self.lock_open_specific_board_input.is_empty()
+    }
+
+    pub fn lock_open_specific_lock_has_input(&self) -> bool {
+        !self.lock_open_specific_lock_input.is_empty()
+    }
+
+    pub fn lock_statuses_board_input_text(&self) -> String {
+        if self.lock_statuses_board_input.is_empty() {
+            return String::from("-");
+        }
+        self.lock_statuses_board_input.clone()
+    }
+
+    pub fn lock_statuses_board_has_input(&self) -> bool {
+        !self.lock_statuses_board_input.is_empty()
+    }
+
+    pub fn lock_statuses_running(&self) -> bool {
+        self.lock_statuses_running
+    }
+
+    pub fn lock_statuses_input_status_text(&self) -> String {
+        self.lock_statuses_input_status.clone()
+    }
+
+    pub fn lock_statuses_result_status_text(&self) -> String {
+        self.lock_statuses_result_status.clone()
+    }
+
+    pub fn barcode_status_text(&self) -> String {
+        self.barcode_status.clone()
+    }
+
+    pub fn barcode_last_text(&self) -> String {
+        self.barcode_last_text.clone()
+    }
+
     fn keypad_status_text(&self) -> String {
         let required = self.required_keypad_mask();
         if (self.keypad_pressed_mask & required) == required {
@@ -131,10 +413,45 @@ impl App {
             return;
         }
 
+        if self.current_route() == Route::BarcodeScannerTest {
+            match key {
+                KeypadKey::Star => {
+                    if self.route_stack.len() > 1 {
+                        self.stop_barcode_scanner();
+                        self.route_stack.pop();
+                        self.render();
+                    }
+                }
+                KeypadKey::Hash => {
+                    self.barcode_status = String::from("Restarting scanner...");
+                    self.restart_barcode_scanner();
+                    self.render();
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        if matches!(
+            self.current_route(),
+            Route::LockTests
+                | Route::LockTestsOpenAll
+                | Route::LockTestsOpenSpecificBoard
+                | Route::LockTestsOpenSpecificLock
+                | Route::LockTestsGetStatuses
+                | Route::LockTestsGetStatusesResult
+        ) {
+            self.handle_lock_tests_keypad(key);
+            return;
+        }
+
         match self.current_route() {
             Route::MainMenu => {
                 if let KeypadKey::Digit(d) = key {
                     if let Some(route) = Route::from_menu_digit(d) {
+                        if route == Route::BarcodeScannerTest {
+                            self.start_barcode_scanner();
+                        }
                         self.route_stack.push(route);
                         self.render();
                     }
@@ -153,6 +470,401 @@ impl App {
                 }
                 _ => {}
             },
+        }
+    }
+
+    fn handle_lock_tests_keypad(&mut self, key: KeypadKey) {
+        match self.current_route() {
+            Route::LockTests => match key {
+                KeypadKey::Digit(1) => {
+                    self.reset_submenu_state(Route::LockTestsOpenAll);
+                    self.route_stack.push(Route::LockTestsOpenAll);
+                    self.render();
+                }
+                KeypadKey::Digit(2) => {
+                    self.reset_submenu_state(Route::LockTestsOpenSpecificBoard);
+                    self.route_stack.push(Route::LockTestsOpenSpecificBoard);
+                    self.render();
+                }
+                KeypadKey::Digit(3) => {
+                    self.reset_submenu_state(Route::LockTestsGetStatuses);
+                    self.route_stack.push(Route::LockTestsGetStatuses);
+                    self.render();
+                }
+                KeypadKey::Star => {
+                    if self.route_stack.len() > 1 {
+                        self.route_stack.pop();
+                        self.render();
+                    }
+                }
+                _ => {}
+            },
+            Route::LockTestsOpenAll => match key {
+                KeypadKey::Hash => self.start_open_all_locks(),
+                KeypadKey::Star => {
+                    if self.route_stack.len() > 1 {
+                        self.route_stack.pop();
+                        self.render();
+                    }
+                }
+                _ => {}
+            },
+            Route::LockTestsOpenSpecificBoard => self.handle_open_specific_board_keypad(key),
+            Route::LockTestsOpenSpecificLock => self.handle_open_specific_lock_keypad(key),
+            Route::LockTestsGetStatuses => self.handle_get_statuses_keypad(key),
+            Route::LockTestsGetStatusesResult => match key {
+                KeypadKey::Star => {
+                    if self.route_stack.len() > 1 {
+                        self.route_stack.pop();
+                        self.render();
+                    }
+                }
+                KeypadKey::Hash => self.exit_to_main_menu(),
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
+    fn handle_get_statuses_keypad(&mut self, key: KeypadKey) {
+        match key {
+            KeypadKey::Digit(d) => {
+                if self.lock_statuses_board_input.len() < 5 {
+                    self.lock_statuses_board_input.push(char::from(b'0' + d));
+                }
+                self.lock_statuses_input_status = String::from("Press # to get statuses");
+                self.render();
+            }
+            KeypadKey::Star => {
+                if !self.lock_statuses_board_input.is_empty() {
+                    self.lock_statuses_board_input.pop();
+                    self.lock_statuses_input_status = String::from("Press # to get statuses");
+                    self.render();
+                } else if self.route_stack.len() > 1 {
+                    self.route_stack.pop();
+                    self.render();
+                }
+            }
+            KeypadKey::Hash => self.submit_get_statuses(),
+            _ => {}
+        }
+    }
+
+    fn handle_open_specific_board_keypad(&mut self, key: KeypadKey) {
+        match key {
+            KeypadKey::Digit(d) => {
+                if self.lock_open_specific_board_input.len() < 5 {
+                    self.lock_open_specific_board_input.push(char::from(b'0' + d));
+                }
+                self.lock_open_specific_status = String::from("Press # to continue");
+                self.render();
+            }
+            KeypadKey::Star => {
+                if !self.lock_open_specific_board_input.is_empty() {
+                    self.lock_open_specific_board_input.pop();
+                    self.lock_open_specific_status = String::from("Press # to continue");
+                    self.render();
+                } else if self.route_stack.len() > 1 {
+                    self.route_stack.pop();
+                    self.render();
+                }
+            }
+            KeypadKey::Hash => self.submit_open_specific_board(),
+            _ => {}
+        }
+    }
+
+    fn handle_open_specific_lock_keypad(&mut self, key: KeypadKey) {
+        match key {
+            KeypadKey::Digit(d) => {
+                if self.lock_open_specific_lock_input.len() < 5 {
+                    self.lock_open_specific_lock_input.push(char::from(b'0' + d));
+                }
+                self.lock_open_specific_status = String::from("Press # to open lock");
+                self.render();
+            }
+            KeypadKey::Star => {
+                if !self.lock_open_specific_lock_input.is_empty() {
+                    self.lock_open_specific_lock_input.pop();
+                    self.lock_open_specific_status = String::from("Press # to open lock");
+                    self.render();
+                } else if self.route_stack.len() > 1 {
+                    self.route_stack.pop();
+                    self.render();
+                }
+            }
+            KeypadKey::Hash => {
+                if self.lock_open_specific_lock_input.is_empty() {
+                    self.exit_to_main_menu();
+                } else {
+                    self.submit_open_specific_lock();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn exit_to_main_menu(&mut self) {
+        while self.route_stack.len() > 1 {
+            self.route_stack.pop();
+        }
+        self.render();
+    }
+
+    fn submit_open_specific_board(&mut self) {
+        if self.lock_open_specific_board_input.is_empty() {
+            self.lock_open_specific_status = String::from("Enter board_id first");
+            self.render();
+            return;
+        }
+
+        let Ok(board_id) = self.lock_open_specific_board_input.parse::<u32>() else {
+            self.lock_open_specific_status = String::from("Invalid board_id");
+            self.render();
+            return;
+        };
+
+        if !self.lock_targets.iter().any(|t| t.board_id == board_id) {
+            self.lock_open_specific_status = format!("Board {} not found in settings", board_id);
+            self.render();
+            return;
+        }
+
+        self.lock_open_specific_board_id = Some(board_id);
+        self.lock_open_specific_lock_input.clear();
+        self.lock_open_specific_running = false;
+        self.lock_open_specific_status = format!("Board {} selected. Enter lock_id.", board_id);
+        self.route_stack.push(Route::LockTestsOpenSpecificLock);
+        self.render();
+    }
+
+    fn submit_open_specific_lock(&mut self) {
+        if self.lock_open_specific_running {
+            return;
+        }
+
+        let Some(board_id) = self.lock_open_specific_board_id else {
+            self.lock_open_specific_status = String::from("Select board_id first");
+            self.render();
+            return;
+        };
+
+        if self.lock_open_specific_lock_input.is_empty() {
+            self.lock_open_specific_status = String::from("Enter lock_id first");
+            self.render();
+            return;
+        }
+
+        let Ok(lock_id) = self.lock_open_specific_lock_input.parse::<u32>() else {
+            self.lock_open_specific_status = String::from("Invalid lock_id");
+            self.render();
+            return;
+        };
+
+        if !self
+            .lock_targets
+            .iter()
+            .any(|t| t.board_id == board_id && t.lock_id == lock_id)
+        {
+            self.lock_open_specific_status =
+                format!("Lock {} not found on board {}", lock_id, board_id);
+            self.render();
+            return;
+        }
+
+        self.lock_open_specific_running = true;
+        self.lock_open_specific_status = format!("Opening {}:{}...", board_id, lock_id);
+        self.render();
+
+        executor::run(async move {
+            let result = jetbeep::bus::lock_open(board_id, lock_id).await;
+            let (ok, message) = match result {
+                Ok(()) => (true, String::from("opened")),
+                Err(err) => (false, format!("{}", err)),
+            };
+
+            post_app_event(AppEvent::LockOpenSpecificResult {
+                board_id,
+                lock_id,
+                ok,
+                message,
+            });
+        });
+    }
+
+    fn submit_get_statuses(&mut self) {
+        if self.lock_statuses_running {
+            return;
+        }
+
+        if self.lock_statuses_board_input.is_empty() {
+            self.lock_statuses_input_status = String::from("Enter board_id first");
+            self.render();
+            return;
+        }
+
+        let Ok(board_id) = self.lock_statuses_board_input.parse::<u32>() else {
+            self.lock_statuses_input_status = String::from("Invalid board_id");
+            self.render();
+            return;
+        };
+
+        if !self.lock_targets.iter().any(|t| t.board_id == board_id) {
+            self.lock_statuses_input_status = format!("Board {} not found in settings", board_id);
+            self.render();
+            return;
+        }
+
+        self.lock_statuses_running = true;
+        self.lock_statuses_input_status = format!("Reading statuses for board {}...", board_id);
+        self.lock_statuses_result_status = format!("Reading statuses for board {}...", board_id);
+        self.route_stack.push(Route::LockTestsGetStatusesResult);
+        self.render();
+
+        executor::run(async move {
+            let result = jetbeep::bus::lock_statuses_get(board_id).await;
+            let (ok, statuses, message) = match result {
+                Ok(mask) => (true, mask, format!("0x{:016X}", mask)),
+                Err(err) => (false, 0, format!("{}", err)),
+            };
+
+            post_app_event(AppEvent::LockStatusesResult {
+                board_id,
+                ok,
+                statuses,
+                message,
+            });
+        });
+    }
+
+    fn format_lock_statuses(&self, board_id: u32, statuses: u64) -> String {
+        let mut locks: Vec<u32> = self
+            .lock_targets
+            .iter()
+            .filter(|t| t.board_id == board_id)
+            .map(|t| t.lock_id)
+            .collect();
+        locks.sort_unstable();
+
+        let mut closed = 0u32;
+        let mut open = 0u32;
+        let mut lines: Vec<String> = Vec::new();
+
+        for lock_id in locks {
+            let bit = lock_id;
+            let is_closed = bit < 64 && ((statuses >> bit) & 1) == 1;
+            if is_closed {
+                closed = closed.saturating_add(1);
+            } else {
+                open = open.saturating_add(1);
+            }
+
+            lines.push(format!(
+                "{}:{} {}",
+                board_id,
+                lock_id,
+                if is_closed { "CLOSED" } else { "OPEN" }
+            ));
+        }
+
+        let mut out = format!(
+            "Board {} mask=0x{:016X} | {} CLOSED | {} OPEN",
+            board_id,
+            statuses,
+            closed,
+            open
+        );
+
+        if !lines.is_empty() {
+            out.push('\n');
+            out.push_str(lines.join("\n").as_str());
+        }
+
+        out
+    }
+
+    fn start_barcode_scanner(&mut self) {
+        self.barcode_status = String::from("Waiting for scan...");
+        executor::run(async {
+            if let Err(err) = jetbeep::bus::barcode_scanner_start().await {
+                log::warn!("barcode_scanner_start failed: {}", err);
+            }
+        });
+    }
+
+    fn stop_barcode_scanner(&mut self) {
+        self.barcode_status = String::from("Scanner stopped");
+        executor::run(async {
+            if let Err(err) = jetbeep::bus::barcode_scanner_stop().await {
+                log::warn!("barcode_scanner_stop failed: {}", err);
+            }
+        });
+    }
+
+    fn restart_barcode_scanner(&mut self) {
+        self.barcode_status = String::from("Waiting for next scan...");
+        executor::run(async {
+            if let Err(err) = jetbeep::bus::barcode_scanner_stop().await {
+                log::warn!("barcode_scanner_stop failed: {}", err);
+            }
+            if let Err(err) = jetbeep::bus::barcode_scanner_start().await {
+                log::warn!("barcode_scanner_start failed: {}", err);
+            }
+        });
+    }
+
+    fn start_open_all_locks(&mut self) {
+        if self.lock_open_all_running {
+            return;
+        }
+
+        self.lock_open_all_running = true;
+        self.lock_open_all_opened = 0;
+        self.lock_open_all_ok = 0;
+        self.lock_open_all_err = 0;
+        self.lock_open_all_total = self.lock_targets.len() as u32;
+        self.lock_open_all_lines.clear();
+
+        if self.lock_targets.is_empty() {
+            self.push_lock_open_all_line(String::from("No locks found in settings"));
+            self.lock_open_all_running = false;
+            self.render();
+            return;
+        }
+
+        self.push_lock_open_all_line(format!("Open all started ({} locks)", self.lock_targets.len()));
+        self.render();
+
+        let targets = self.lock_targets.clone();
+        executor::run(async move {
+            let total = targets.len();
+            for (index, target) in targets.into_iter().enumerate() {
+                let result = jetbeep::bus::lock_open(target.board_id, target.lock_id).await;
+                let (ok, message) = match result {
+                    Ok(()) => (true, String::from("opened")),
+                    Err(err) => (false, format!("{}", err)),
+                };
+
+                post_app_event(AppEvent::LockOpenAllStepResult {
+                    board_id: target.board_id,
+                    lock_id: target.lock_id,
+                    ok,
+                    message,
+                    index,
+                    total,
+                });
+
+                workq::delay(Duration::from_millis(120)).await;
+            }
+
+            post_app_event(AppEvent::LockOpenAllFinished);
+        });
+    }
+
+    fn push_lock_open_all_line(&mut self, line: String) {
+        self.lock_open_all_lines.push(line);
+        while self.lock_open_all_lines.len() > MAX_LOCK_LINES {
+            self.lock_open_all_lines.remove(0);
         }
     }
 
@@ -233,12 +945,34 @@ impl App {
             return;
         }
 
-        // Placeholder submenus currently share this action counter.
-        // Reset on every open so each menu starts from a clean state.
         self.action_count = 0;
 
         if route == Route::KeypadTest {
             self.reset_keypad_test();
+        }
+
+        if route == Route::LockTestsOpenAll {
+            self.lock_open_all_running = false;
+            self.lock_open_all_opened = 0;
+            self.lock_open_all_ok = 0;
+            self.lock_open_all_err = 0;
+            self.lock_open_all_total = self.lock_targets.len() as u32;
+            self.lock_open_all_lines.clear();
+        }
+
+        if route == Route::LockTestsOpenSpecificBoard {
+            self.lock_open_specific_board_input.clear();
+            self.lock_open_specific_lock_input.clear();
+            self.lock_open_specific_board_id = None;
+            self.lock_open_specific_running = false;
+            self.lock_open_specific_status = String::from("Enter board_id");
+        }
+
+        if route == Route::LockTestsGetStatuses {
+            self.lock_statuses_board_input.clear();
+            self.lock_statuses_running = false;
+            self.lock_statuses_input_status = String::from("Enter board_id");
+            self.lock_statuses_result_status = String::from("No result yet");
         }
     }
 }

@@ -18,7 +18,7 @@ use jetbeep::proto::keypad::ButtonType;
 use crate::core::{
     app::App,
     app_dispatcher::{bind_app, post_app_event},
-    event::AppEvent,
+    event::{AppEvent, LockTarget},
 };
 
 fn keypad_has_letters(settings: &jetbeep::proto::DeviceSettings) -> bool {
@@ -36,6 +36,25 @@ fn keypad_has_letters(settings: &jetbeep::proto::DeviceSettings) -> bool {
         .unwrap_or(false)
 }
 
+fn lock_targets_from_settings(
+    settings: &jetbeep::proto::DeviceSettings,
+) -> alloc::vec::Vec<LockTarget> {
+    let mut targets = alloc::vec::Vec::new();
+
+    if let Some(lock_settings) = settings.lock_settings.as_ref() {
+        for board in &lock_settings.boards {
+            for port in &board.port_settings {
+                targets.push(LockTarget {
+                    board_id: board.id,
+                    lock_id: port.id,
+                });
+            }
+        }
+    }
+
+    targets
+}
+
 #[cfg(feature = "simulator")]
 async fn keypad_forward_task() {
     // Ensure this app owns the live keypad stream sender for this run.
@@ -43,6 +62,16 @@ async fn keypad_forward_task() {
     let mut rx = bus::keypad_subscribe();
     while let Some(key) = rx.next().await {
         post_app_event(AppEvent::Keypad(key));
+    }
+}
+
+#[cfg(feature = "simulator")]
+async fn barcode_forward_task() {
+    // Ensure this app owns the live barcode stream sender for this run.
+    bus::barcode_unsubscribe();
+    let mut rx = bus::barcode_subscribe();
+    while let Some(barcode) = rx.next().await {
+        post_app_event(AppEvent::BarcodeScanned(barcode));
     }
 }
 
@@ -55,7 +84,10 @@ async fn clock_tick_task() {
 
 async fn load_keypad_layout_task() {
     if let Some(settings) = device_settings_cache::get_cached() {
+        let lock_targets = lock_targets_from_settings(&settings);
+        log::info!("service-menu: loaded {} lock targets from cached settings", lock_targets.len());
         post_app_event(AppEvent::KeypadLayoutLoaded(keypad_has_letters(&settings)));
+        post_app_event(AppEvent::LockTargetsLoaded(lock_targets));
         return;
     }
 
@@ -63,13 +95,17 @@ async fn load_keypad_layout_task() {
         match bus::get_device_settings().await {
             Ok(settings) => {
                 let has_letters = keypad_has_letters(&settings);
+                let lock_targets = lock_targets_from_settings(&settings);
+                log::info!("service-menu: loaded {} lock targets from device settings", lock_targets.len());
                 device_settings_cache::set_loaded(settings);
                 post_app_event(AppEvent::KeypadLayoutLoaded(has_letters));
+                post_app_event(AppEvent::LockTargetsLoaded(lock_targets));
             }
             Err(err) => {
                 log::warn!("device settings unavailable, defaulting keypad to 3x4: {}", err);
                 device_settings_cache::set_failed();
                 post_app_event(AppEvent::KeypadLayoutLoaded(false));
+                post_app_event(AppEvent::LockTargetsLoaded(alloc::vec::Vec::new()));
             }
         }
         return;
@@ -82,6 +118,13 @@ async fn load_keypad_layout_task() {
         .unwrap_or(false);
 
     post_app_event(AppEvent::KeypadLayoutLoaded(has_letters));
+
+    let lock_targets = device_settings_cache::wait_loaded()
+        .await
+        .as_ref()
+        .map(lock_targets_from_settings)
+        .unwrap_or_default();
+    post_app_event(AppEvent::LockTargetsLoaded(lock_targets));
 }
 
 pub unsafe fn app_main() {
@@ -96,4 +139,7 @@ pub unsafe fn app_main() {
 
     #[cfg(feature = "simulator")]
     executor::run(keypad_forward_task());
+
+    #[cfg(feature = "simulator")]
+    executor::run(barcode_forward_task());
 }
