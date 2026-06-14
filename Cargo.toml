@@ -14,6 +14,6 @@ dev-screen-preview = []
 
 [dependencies]
 jetbeep = { path = "../../rust/lib/jetbeep-desktop" }
-jetbeep-lvgl-dsl = { path = "../../lib/application/jetbeep-lvgl-dsl" }
+jetbeep-lvgl-dsl = { path = "../../lib/jetbeep-lvgl-dsl" }
 log = "0.4"
 futures = "0.3"
