@@ -1,1 +1,41 @@
-[]
+{
+	"device_settings": {
+		"crc32_hash": 0,
+		"keypad_settings": {
+			"alphabet": [
+				"BUTTON_TYPE_1",
+				"BUTTON_TYPE_2",
+				"BUTTON_TYPE_3",
+				"BUTTON_TYPE_A",
+				"BUTTON_TYPE_4",
+				"BUTTON_TYPE_5",
+				"BUTTON_TYPE_6",
+				"BUTTON_TYPE_B",
+				"BUTTON_TYPE_7",
+				"BUTTON_TYPE_8",
+				"BUTTON_TYPE_9",
+				"BUTTON_TYPE_C",
+				"BUTTON_TYPE_STAR",
+				"BUTTON_TYPE_0",
+				"BUTTON_TYPE_HASH",
+				"BUTTON_TYPE_D"
+			]
+		}
+	},
+	"lockers": [
+		{
+			"width": 40,
+			"depth": 50,
+			"open_check_policy": "always",
+			"cells": [
+				{
+					"cell_name": "1",
+					"height": 30,
+					"size": "Medium",
+					"board_id": 1,
+					"lock_id": 1
+				}
+			]
+		}
+	]
+}

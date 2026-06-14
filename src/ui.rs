@@ -1,5 +1,6 @@
 use alloc::{format, string::String};
 
+use jetbeep::bus::KeypadKey;
 use jetbeep_lvgl_dsl::prelude::*;
 
 use crate::core::{
@@ -36,6 +37,7 @@ pub fn render(app: &App) -> Obj {
 
     match app.current_route() {
         Route::MainMenu => render_main_menu(&root),
+        Route::KeypadTest => render_keypad_test(&root, app),
         route => render_test_screen(&root, route, &app.action_text()),
     }
 
@@ -185,6 +187,77 @@ fn render_test_screen(root: &Obj, route: Route, action_text: &str) {
         .text_color(Color::white());
 }
 
+fn render_keypad_test(root: &Obj, app: &App) {
+    let title = Label::new(root);
+    title.text(Route::KeypadTest.title()).text_color(Color::hex(TEXT));
+
+    let desc = Label::new(root);
+    desc.text(Route::KeypadTest.description())
+        .long_mode(LvLabelLongMode::Wrap)
+        .text_color(Color::hex(MUTED));
+
+    let layout = Label::new(root);
+    layout
+        .text(&format!("Detected layout: {}", app.keypad_layout_name()))
+        .text_color(Color::hex(MUTED));
+
+    let required = Label::new(root);
+    required
+        .text(&app.keypad_required_keys_text())
+        .long_mode(LvLabelLongMode::Wrap)
+        .text_color(Color::hex(TEXT));
+
+    let status = Label::new(root);
+    status
+        .text(&app.action_text())
+        .long_mode(LvLabelLongMode::Wrap)
+        .text_color(Color::hex(PRIMARY));
+
+    let last = Label::new(root);
+    last
+        .text(&app.keypad_last_pressed_text())
+        .text_color(Color::hex(MUTED));
+
+    let spacer = Obj::new(root);
+    spacer
+        .width(Size::Pct(100))
+        .height(Size::Px(8))
+        .bg_opa(0)
+        .border_width(0);
+
+    let actions = Obj::new(root);
+    actions
+        .width(Size::Pct(100))
+        .height(Size::Px(ACTION_BUTTON_H + 8))
+        .bg_opa(0)
+        .border_width(0)
+        .flex_row()
+        .flex_align(FlexAlign::SpaceBetween, FlexAlign::Center, FlexAlign::Center)
+        .gap(12)
+        .remove_flag(LvObjFlag::SCROLLABLE);
+
+    let back = Button::new(&actions);
+    back.width(Size::Pct(48))
+        .height(Size::Px(ACTION_BUTTON_H))
+        .bg_color(Color::hex(CARD))
+        .border_width(2)
+        .border_color(Color::hex(0xD5DCE4))
+        .radius(10)
+        .on_click(on_back_click)
+        .text("Back")
+        .text_color(Color::hex(TEXT));
+
+    let done = Button::new(&actions);
+    done.width(Size::Pct(48))
+        .height(Size::Px(ACTION_BUTTON_H))
+        .bg_color(Color::hex(PRIMARY))
+        .border_width(0)
+        .radius(10)
+        .on_click(on_keypad_done_click)
+        .text("Done (#)")
+        .text_color(Color::white());
+}
+
 fn on_menu_1_click(_: Event) {
     post_app_event(AppEvent::Open(Route::KeypadTest));
 }
@@ -210,4 +283,8 @@ fn on_back_click(_: Event) {
 
 fn on_action_click(_: Event) {
     post_app_event(AppEvent::Action);
+}
+
+fn on_keypad_done_click(_: Event) {
+    post_app_event(AppEvent::Keypad(KeypadKey::Hash));
 }

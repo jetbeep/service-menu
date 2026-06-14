@@ -37,7 +37,7 @@ impl Route {
     pub fn description(self) -> &'static str {
         match self {
             Self::MainMenu => "Choose a test by touch or keypad (1-6).",
-            Self::KeypadTest => "Placeholder. Press # to run action, * to go back.",
+            Self::KeypadTest => "Press each keypad button at least once. Press # to finish and exit.",
             Self::LockTests => "Placeholder. Press # to run action, * to go back.",
             Self::BarcodeScannerTest => "Placeholder. Press # to run action, * to go back.",
             Self::ConnectivityInfo => "Placeholder. Press # to run action, * to go back.",

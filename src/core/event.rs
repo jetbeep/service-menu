@@ -8,5 +8,6 @@ pub enum AppEvent {
     Back,
     Action,
     Tick,
+    KeypadLayoutLoaded(bool),
     Keypad(KeypadKey),
 }
