@@ -9,6 +9,8 @@ crate-type = ["rlib"]
 [features]
 default = ["simulator"]
 simulator = ["jetbeep/simulator"]
+force-http-api = []
+dev-screen-preview = []
 
 [dependencies]
 jetbeep = { path = "../../rust/lib/jetbeep-desktop" }
