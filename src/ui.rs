@@ -37,7 +37,7 @@ pub fn render(app: &App) -> Obj {
         .gap(ROOT_GAP)
         .remove_flag(LvObjFlag::SCROLLABLE);
 
-    render_clock_overlay(&root);
+    render_clock_overlay(&root, app);
 
     match app.current_route() {
         Route::MainMenu => render_main_menu(&root),
@@ -57,12 +57,19 @@ pub fn render(app: &App) -> Obj {
     root
 }
 
-fn render_clock_overlay(root: &Obj) {
+fn render_clock_overlay(root: &Obj, app: &App) {
     let date = Label::new(root);
     date
         .add_flag(LvObjFlag::FLOATING | LvObjFlag::IGNORE_LAYOUT)
         .align(LvAlign::TopRight, 0, 0)
         .text(&format_utc_date())
+        .text_color(Color::hex(MUTED));
+
+    let afk = Label::new(root);
+    afk
+        .add_flag(LvObjFlag::FLOATING | LvObjFlag::IGNORE_LAYOUT)
+        .align(LvAlign::TopRight, -96, 0)
+        .text(&app.afk_countdown_text())
         .text_color(Color::hex(MUTED));
 
     let time = Label::new(root);
@@ -117,7 +124,7 @@ fn render_main_menu(root: &Obj) {
 
     let subtitle = Label::new(root);
     subtitle
-        .text("Select by touch, or press keypad 1-6")
+        .text("Select by touch, press keypad 1-6, or use Exit")
         .long_mode(LvLabelLongMode::Wrap)
         .text_color(Color::hex(MUTED));
 
@@ -127,6 +134,18 @@ fn render_main_menu(root: &Obj) {
     add_menu_button(root, "4. Connectivity info", on_menu_4_click);
     add_menu_button(root, "5. Battery info", on_menu_5_click);
     add_menu_button(root, "6. Screen color test", on_menu_6_click);
+
+    add_bottom_spacer(root);
+
+    let exit = Button::new(root);
+    exit.width(Size::Pct(100))
+        .height(Size::Px(ACTION_BUTTON_H))
+        .bg_color(Color::hex(PRIMARY))
+        .border_width(0)
+        .radius(10)
+        .on_click(on_main_menu_exit_click)
+        .text("Exit (#)")
+        .text_color(Color::white());
 }
 
 fn add_menu_button(parent: &Obj, text: &str, on_click: fn(Event)) {
@@ -269,13 +288,22 @@ fn render_open_all_page(root: &Obj, app: &App) {
         .long_mode(LvLabelLongMode::Wrap)
         .text_color(Color::hex(PRIMARY));
 
-    let results = Label::new(root);
+    let results_panel = Obj::new(root);
+    results_panel
+        .width(Size::Pct(100))
+        .flex_grow(1)
+        .bg_color(Color::hex(CARD))
+        .border_width(2)
+        .border_color(Color::hex(0xD5DCE4))
+        .radius(10)
+        .pad_all(10);
+
+    let results = Label::new(&results_panel);
     results
+        .width(Size::Pct(100))
         .text(&app.lock_open_all_results_text())
         .long_mode(LvLabelLongMode::Wrap)
         .text_color(Color::hex(TEXT));
-
-    add_bottom_spacer(root);
 
     let actions = Obj::new(root);
     actions
@@ -894,6 +922,10 @@ fn on_back_click(_: Event) {
 
 fn on_action_click(_: Event) {
     post_app_event(AppEvent::Action);
+}
+
+fn on_main_menu_exit_click(_: Event) {
+    post_app_event(AppEvent::SleepRequested);
 }
 
 fn on_keypad_done_click(_: Event) {

@@ -13,7 +13,8 @@ use crate::core::{
     route::Route,
 };
 
-const MAX_LOCK_LINES: usize = 10;
+const MAX_LOCK_LINES: usize = 256;
+const AFK_TIMEOUT_SECS: i64 = 60;
 
 pub struct App {
     route_stack: Stack<Route>,
@@ -45,12 +46,15 @@ pub struct App {
     connectivity_server_state: String,
     battery_loading: bool,
     battery_info_text: String,
+    last_user_activity_secs: i64,
+    sleep_requested: bool,
 }
 
 impl App {
     pub fn new() -> Self {
         let mut route_stack = Stack::new();
         route_stack.push(Route::MainMenu);
+        let now_secs = Self::current_unix_seconds();
         Self {
             route_stack,
             root: None,
@@ -81,12 +85,15 @@ impl App {
             connectivity_server_state: String::from("Error"),
             battery_loading: false,
             battery_info_text: String::from("No battery info loaded yet"),
+            last_user_activity_secs: now_secs,
+            sleep_requested: false,
         }
     }
 
     pub fn handle_event(&mut self, event: AppEvent) {
         match event {
             AppEvent::Open(route) => {
+                self.mark_user_activity();
                 self.reset_submenu_state(route);
                 self.route_stack.push(route);
 
@@ -105,6 +112,7 @@ impl App {
                 self.render();
             }
             AppEvent::Back => {
+                self.mark_user_activity();
                 if self.route_stack.len() > 1 {
                     if self.current_route() == Route::BarcodeScannerTest {
                         self.stop_barcode_scanner();
@@ -114,6 +122,7 @@ impl App {
                 }
             }
             AppEvent::Action => {
+                self.mark_user_activity();
                 if self.current_route() == Route::ConnectivityInfo {
                     self.start_connectivity_load();
                     self.render();
@@ -125,7 +134,11 @@ impl App {
                     self.render();
                 }
             }
-            AppEvent::Tick => self.render(),
+            AppEvent::SleepRequested => self.request_sleep(),
+            AppEvent::Tick => {
+                self.handle_afk_tick();
+                self.render();
+            }
             AppEvent::KeypadLayoutLoaded(has_letters) => {
                 self.keypad_has_letters = has_letters;
                 self.render();
@@ -135,7 +148,10 @@ impl App {
                 self.lock_open_all_total = self.lock_targets.len() as u32;
                 self.render();
             }
-            AppEvent::LockOpenAll => self.start_open_all_locks(),
+            AppEvent::LockOpenAll => {
+                self.mark_user_activity();
+                self.start_open_all_locks()
+            }
             AppEvent::LockOpenAllStepResult {
                 board_id,
                 lock_id,
@@ -237,7 +253,10 @@ impl App {
                 };
                 self.render();
             }
-            AppEvent::Keypad(key) => self.handle_keypad(key),
+            AppEvent::Keypad(key) => {
+                self.mark_user_activity();
+                self.handle_keypad(key)
+            }
         }
     }
 
@@ -462,6 +481,10 @@ impl App {
         self.battery_info_text.clone()
     }
 
+    pub fn afk_countdown_text(&self) -> String {
+        format!("AFK: {}s", self.afk_seconds_left())
+    }
+
     fn keypad_status_text(&self) -> String {
         let required = self.required_keypad_mask();
         if (self.keypad_pressed_mask & required) == required {
@@ -520,23 +543,27 @@ impl App {
 
         match self.current_route() {
             Route::MainMenu => {
-                if let KeypadKey::Digit(d) = key {
-                    if let Some(route) = Route::from_menu_digit(d) {
-                        if route == Route::BarcodeScannerTest {
-                            self.start_barcode_scanner();
-                        }
+                match key {
+                    KeypadKey::Digit(d) => {
+                        if let Some(route) = Route::from_menu_digit(d) {
+                            if route == Route::BarcodeScannerTest {
+                                self.start_barcode_scanner();
+                            }
 
-                        if route == Route::ConnectivityInfo {
-                            self.start_connectivity_load();
-                        }
+                            if route == Route::ConnectivityInfo {
+                                self.start_connectivity_load();
+                            }
 
-                        if route == Route::BatteryInfo {
-                            self.start_battery_load();
-                        }
+                            if route == Route::BatteryInfo {
+                                self.start_battery_load();
+                            }
 
-                        self.route_stack.push(route);
-                        self.render();
+                            self.route_stack.push(route);
+                            self.render();
+                        }
                     }
+                    KeypadKey::Hash => self.request_sleep(),
+                    _ => {}
                 }
             }
             _ => match key {
@@ -1093,6 +1120,46 @@ impl App {
         while self.lock_open_all_lines.len() > MAX_LOCK_LINES {
             self.lock_open_all_lines.remove(0);
         }
+    }
+
+    fn handle_afk_tick(&mut self) {
+        if self.sleep_requested {
+            return;
+        }
+
+        if self.afk_seconds_left() == 0 {
+            self.request_sleep();
+        }
+    }
+
+    fn afk_seconds_left(&self) -> u32 {
+        let elapsed = Self::current_unix_seconds().saturating_sub(self.last_user_activity_secs);
+        if elapsed >= AFK_TIMEOUT_SECS {
+            0
+        } else {
+            (AFK_TIMEOUT_SECS - elapsed) as u32
+        }
+    }
+
+    fn mark_user_activity(&mut self) {
+        self.last_user_activity_secs = Self::current_unix_seconds();
+    }
+
+    fn request_sleep(&mut self) {
+        if self.sleep_requested {
+            return;
+        }
+
+        self.sleep_requested = true;
+        executor::run(async {
+            if let Err(err) = jetbeep::bus::sleep().await {
+                log::warn!("service-menu sleep failed: {}", err);
+            }
+        });
+    }
+
+    fn current_unix_seconds() -> i64 {
+        (jetbeep::unix_time() / 1_000_000) as i64
     }
 
     fn required_keypad_mask(&self) -> u32 {

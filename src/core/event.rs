@@ -13,6 +13,7 @@ pub enum AppEvent {
     Open(Route),
     Back,
     Action,
+    SleepRequested,
     Tick,
     KeypadLayoutLoaded(bool),
     LockTargetsLoaded(alloc::vec::Vec<LockTarget>),
