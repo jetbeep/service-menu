@@ -2,6 +2,7 @@ use alloc::{format, string::String, vec, vec::Vec};
 use ::core::time::Duration;
 
 use jetbeep::bus::KeypadKey;
+use jetbeep::proto::bus::LockStatus;
 use jetbeep::{executor, workq};
 use jetbeep_lvgl_dsl::prelude::{Obj, Widget};
 
@@ -724,8 +725,8 @@ impl App {
         executor::run(async move {
             let result = jetbeep::bus::lock_statuses_get(board_id).await;
             let (ok, statuses, message) = match result {
-                Ok(mask) => (true, mask, format!("0x{:016X}", mask)),
-                Err(err) => (false, 0, format!("{}", err)),
+                Ok(statuses) => (true, statuses, String::new()),
+                Err(err) => (false, Vec::new(), format!("{}", err)),
             };
 
             post_app_event(AppEvent::LockStatusesResult {
@@ -737,7 +738,7 @@ impl App {
         });
     }
 
-    fn format_lock_statuses(&self, board_id: u32, statuses: u64) -> String {
+    fn format_lock_statuses(&self, board_id: u32, statuses: Vec<LockStatus>) -> String {
         let mut locks: Vec<u32> = self
             .lock_targets
             .iter()
@@ -748,31 +749,41 @@ impl App {
 
         let mut closed = 0u32;
         let mut open = 0u32;
+        let mut disabled = 0u32;
         let mut lines: Vec<String> = Vec::new();
 
         for lock_id in locks {
-            let bit = lock_id;
-            let is_closed = bit < 64 && ((statuses >> bit) & 1) == 1;
-            if is_closed {
-                closed = closed.saturating_add(1);
-            } else {
-                open = open.saturating_add(1);
-            }
+            let state = statuses.get(lock_id as usize).copied().unwrap_or(LockStatus::Disabled);
+
+            let state_label = match state {
+                LockStatus::Closed => {
+                    closed = closed.saturating_add(1);
+                    "CLOSED"
+                }
+                LockStatus::Opened => {
+                    open = open.saturating_add(1);
+                    "OPEN"
+                }
+                LockStatus::Disabled => {
+                    disabled = disabled.saturating_add(1);
+                    "DISABLED"
+                }
+            };
 
             lines.push(format!(
                 "{}:{} {}",
                 board_id,
                 lock_id,
-                if is_closed { "CLOSED" } else { "OPEN" }
+                state_label
             ));
         }
 
         let mut out = format!(
-            "Board {} mask=0x{:016X} | {} CLOSED | {} OPEN",
+            "Board {} | {} CLOSED | {} OPEN | {} DISABLED",
             board_id,
-            statuses,
             closed,
-            open
+            open,
+            disabled
         );
 
         if !lines.is_empty() {

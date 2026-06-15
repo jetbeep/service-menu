@@ -1,4 +1,4 @@
-use jetbeep::bus::KeypadKey;
+use jetbeep::bus::{KeypadKey, LockStatuses};
 
 use crate::core::route::Route;
 
@@ -35,7 +35,7 @@ pub enum AppEvent {
     LockStatusesResult {
         board_id: u32,
         ok: bool,
-        statuses: u64,
+        statuses: LockStatuses,
         message: alloc::string::String,
     },
     BarcodeScanned(alloc::string::String),
