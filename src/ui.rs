@@ -50,7 +50,8 @@ pub fn render(app: &App) -> Obj {
         Route::LockTestsGetStatusesResult => render_get_statuses_result_page(&root, app),
         Route::BarcodeScannerTest => render_barcode_scanner_page(&root, app),
         Route::ConnectivityInfo => render_connectivity_info_page(&root, app),
-        route => render_test_screen(&root, route, &app.action_text()),
+        Route::BatteryInfo => render_battery_info_page(&root, app),
+        Route::ScreenColorTest => render_screen_color_test_page(&root),
     }
 
     root
@@ -153,57 +154,6 @@ fn add_menu_button(parent: &Obj, text: &str, on_click: fn(Event)) {
         .border_width(0)
         .remove_flag(LvObjFlag::SCROLLABLE);
     }
-
-fn render_test_screen(root: &Obj, route: Route, action_text: &str) {
-    let title = Label::new(root);
-    title.text(route.title()).text_color(Color::hex(TEXT));
-
-    let desc = Label::new(root);
-    desc.text(route.description()).text_color(Color::hex(MUTED));
-
-    if !action_text.is_empty() {
-        let status = Label::new(root);
-        status
-            .text(action_text)
-            .text_color(Color::hex(PRIMARY))
-            .long_mode(LvLabelLongMode::Wrap);
-    }
-
-    add_bottom_spacer(root);
-
-    let actions = Obj::new(root);
-    actions
-        .width(Size::Pct(100))
-        .height(Size::Px(ACTION_BUTTON_H + 8))
-        .bg_opa(0)
-        .border_width(0)
-        .flex_row()
-        .flex_align(FlexAlign::SpaceBetween, FlexAlign::Center, FlexAlign::Center)
-        .gap(12)
-        .remove_flag(LvObjFlag::SCROLLABLE);
-
-    let back = Button::new(&actions);
-    back.width(Size::Pct(48))
-        .height(Size::Px(ACTION_BUTTON_H))
-        .bg_color(Color::hex(CARD))
-        .border_width(2)
-        .border_color(Color::hex(0xD5DCE4))
-        .radius(10)
-        .on_click(on_back_click)
-        .text("Back (*)")
-        .text_color(Color::hex(TEXT));
-
-    let action = Button::new(&actions);
-    action
-        .width(Size::Pct(48))
-        .height(Size::Px(ACTION_BUTTON_H))
-        .bg_color(Color::hex(PRIMARY))
-        .border_width(0)
-        .radius(10)
-        .on_click(on_action_click)
-        .text("Action (#)")
-        .text_color(Color::white());
-}
 
 fn render_keypad_test(root: &Obj, app: &App) {
     let title = Label::new(root);
@@ -754,6 +704,132 @@ fn render_connectivity_info_page(root: &Obj, app: &App) {
         .on_click(on_action_click)
         .text("Refresh (#)")
         .text_color(Color::white());
+}
+
+fn render_battery_info_page(root: &Obj, app: &App) {
+    let title = Label::new(root);
+    title
+        .text(Route::BatteryInfo.title())
+        .text_color(Color::hex(TEXT));
+
+    let desc = Label::new(root);
+    desc.text("Battery information from battery_get_info().")
+        .long_mode(LvLabelLongMode::Wrap)
+        .text_color(Color::hex(MUTED));
+
+    let status = Label::new(root);
+    status
+        .text(if app.battery_loading() {
+            "Loading battery info..."
+        } else {
+            "Battery info loaded"
+        })
+        .text_color(Color::hex(PRIMARY));
+
+    let info = Label::new(root);
+    info
+        .text(&app.battery_info_text())
+        .long_mode(LvLabelLongMode::Wrap)
+        .text_color(Color::hex(TEXT));
+
+    add_bottom_spacer(root);
+
+    let actions = Obj::new(root);
+    actions
+        .width(Size::Pct(100))
+        .height(Size::Px(ACTION_BUTTON_H + 8))
+        .bg_opa(0)
+        .border_width(0)
+        .flex_row()
+        .flex_align(FlexAlign::SpaceBetween, FlexAlign::Center, FlexAlign::Center)
+        .gap(12)
+        .remove_flag(LvObjFlag::SCROLLABLE);
+
+    let back = Button::new(&actions);
+    back.width(Size::Pct(48))
+        .height(Size::Px(ACTION_BUTTON_H))
+        .bg_color(Color::hex(CARD))
+        .border_width(2)
+        .border_color(Color::hex(0xD5DCE4))
+        .radius(10)
+        .on_click(on_back_click)
+        .text("Back (*)")
+        .text_color(Color::hex(TEXT));
+
+    let refresh = Button::new(&actions);
+    refresh.width(Size::Pct(48))
+        .height(Size::Px(ACTION_BUTTON_H))
+        .bg_color(Color::hex(PRIMARY))
+        .border_width(0)
+        .radius(10)
+        .on_click(on_action_click)
+        .text("Refresh (#)")
+        .text_color(Color::white());
+}
+
+fn render_screen_color_test_page(root: &Obj) {
+    let title = Label::new(root);
+    title
+        .text(Route::ScreenColorTest.title())
+        .text_color(Color::hex(TEXT));
+
+    let desc = Label::new(root);
+    desc.text("Verify stripe colors and gradients on the display.")
+        .long_mode(LvLabelLongMode::Wrap)
+        .text_color(Color::hex(MUTED));
+
+    let stripes = Obj::new(root);
+    stripes
+        .width(Size::Pct(100))
+        .flex_grow(1)
+        .bg_opa(0)
+        .border_width(0)
+        .pad_all(0)
+        .flex_col()
+        .gap(0)
+        .remove_flag(LvObjFlag::SCROLLABLE);
+
+    add_color_stripe(&stripes, 0xFFFFFF);
+    add_color_stripe(&stripes, 0x000000);
+    add_color_stripe(&stripes, 0xFF0000);
+    add_color_stripe(&stripes, 0x00FF00);
+    add_color_stripe(&stripes, 0x0000FF);
+    add_color_stripe(&stripes, 0x00FFFF);
+    add_color_stripe(&stripes, 0xFF00FF);
+    add_color_stripe(&stripes, 0xFFFF00);
+
+    let actions = Obj::new(root);
+    actions
+        .width(Size::Pct(100))
+        .height(Size::Px(ACTION_BUTTON_H))
+        .bg_opa(0)
+        .border_width(0)
+        .flex_row()
+        .flex_align(FlexAlign::Center, FlexAlign::Center, FlexAlign::Center)
+        .remove_flag(LvObjFlag::SCROLLABLE);
+
+    let back = Button::new(&actions);
+    back.width(Size::Pct(100))
+        .height(Size::Px(ACTION_BUTTON_H))
+        .bg_color(Color::hex(CARD))
+        .border_width(2)
+        .border_color(Color::hex(0xD5DCE4))
+        .radius(10)
+        .on_click(on_back_click)
+        .text("Back (*)")
+        .text_color(Color::hex(TEXT));
+}
+
+fn add_color_stripe(parent: &Obj, hex: u32) {
+    let stripe = Obj::new(parent);
+    stripe
+        .width(Size::Pct(100))
+        .flex_grow(1)
+        .bg_color(Color::hex(hex))
+        .border_width(0)
+        .radius(0)
+        .pad_all(0)
+        .remove_flag(LvObjFlag::SCROLLABLE);
 }
 
 fn render_numeric_touch_keypad(root: &Obj) {

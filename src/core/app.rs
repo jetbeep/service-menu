@@ -43,6 +43,8 @@ pub struct App {
     connectivity_loading: bool,
     connectivity_info_text: String,
     connectivity_server_state: String,
+    battery_loading: bool,
+    battery_info_text: String,
 }
 
 impl App {
@@ -77,6 +79,8 @@ impl App {
             connectivity_loading: false,
             connectivity_info_text: String::from("No modem info loaded yet"),
             connectivity_server_state: String::from("Error"),
+            battery_loading: false,
+            battery_info_text: String::from("No battery info loaded yet"),
         }
     }
 
@@ -94,6 +98,10 @@ impl App {
                     self.start_connectivity_load();
                 }
 
+                if route == Route::BatteryInfo {
+                    self.start_battery_load();
+                }
+
                 self.render();
             }
             AppEvent::Back => {
@@ -108,6 +116,9 @@ impl App {
             AppEvent::Action => {
                 if self.current_route() == Route::ConnectivityInfo {
                     self.start_connectivity_load();
+                    self.render();
+                } else if self.current_route() == Route::BatteryInfo {
+                    self.start_battery_load();
                     self.render();
                 } else if self.current_route() != Route::MainMenu {
                     self.action_count = self.action_count.saturating_add(1);
@@ -214,6 +225,15 @@ impl App {
                     String::from("Connected")
                 } else {
                     String::from("Error")
+                };
+                self.render();
+            }
+            AppEvent::BatteryInfoLoaded { ok, text } => {
+                self.battery_loading = false;
+                self.battery_info_text = if ok {
+                    text
+                } else {
+                    format!("Failed to load battery info: {}", text)
                 };
                 self.render();
             }
@@ -434,6 +454,14 @@ impl App {
         self.connectivity_server_state.clone()
     }
 
+    pub fn battery_loading(&self) -> bool {
+        self.battery_loading
+    }
+
+    pub fn battery_info_text(&self) -> String {
+        self.battery_info_text.clone()
+    }
+
     fn keypad_status_text(&self) -> String {
         let required = self.required_keypad_mask();
         if (self.keypad_pressed_mask & required) == required {
@@ -502,6 +530,10 @@ impl App {
                             self.start_connectivity_load();
                         }
 
+                        if route == Route::BatteryInfo {
+                            self.start_battery_load();
+                        }
+
                         self.route_stack.push(route);
                         self.render();
                     }
@@ -517,6 +549,8 @@ impl App {
                 KeypadKey::Hash => {
                     if self.current_route() == Route::ConnectivityInfo {
                         self.start_connectivity_load();
+                    } else if self.current_route() == Route::BatteryInfo {
+                        self.start_battery_load();
                     } else {
                         self.action_count = self.action_count.saturating_add(1);
                     }
@@ -945,6 +979,62 @@ impl App {
             lines.push(format!("Signal RSRQ: {} (idx {})", sig.rsrq, sig.rsrq_index));
         } else {
             lines.push(String::from("Signal: -"));
+        }
+
+        lines.join("\n")
+    }
+
+    fn start_battery_load(&mut self) {
+        if self.battery_loading {
+            return;
+        }
+
+        self.battery_loading = true;
+        self.battery_info_text = String::from("Loading battery info...");
+
+        executor::run(async {
+            let event = match jetbeep::bus::battery_get_info().await {
+                Ok(info) => AppEvent::BatteryInfoLoaded {
+                    ok: true,
+                    text: App::format_battery_info(&info),
+                },
+                Err(err) => AppEvent::BatteryInfoLoaded {
+                    ok: false,
+                    text: format!("{}", err),
+                },
+            };
+
+            post_app_event(event);
+        });
+    }
+
+    fn format_battery_info(info: &jetbeep::bus::BatteryInfo) -> String {
+        let status_text = match info.status {
+            0 => "Unknown",
+            1 => "Charging",
+            2 => "Not charging",
+            3 => "Full",
+            _ => "Other",
+        };
+
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(format!("Percent: {}%", info.percent));
+        lines.push(format!("Voltage: {} mV", info.voltage));
+        lines.push(format!("Charge status: {}", status_text));
+        lines.push(format!("Temperature: {:.1} C", info.temperature));
+        lines.push(format!("BMS firmware: {}", info.firmware_version));
+
+        if info.cell_voltage.is_empty() {
+            lines.push(String::from("Cell voltages: -"));
+        } else {
+            let mut cells = String::new();
+            for (idx, mv) in info.cell_voltage.iter().enumerate() {
+                if idx > 0 {
+                    cells.push_str(", ");
+                }
+                cells.push_str(format!("C{}={}mV", idx + 1, mv).as_str());
+            }
+            lines.push(format!("Cell voltages: {}", cells));
         }
 
         lines.join("\n")

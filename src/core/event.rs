@@ -46,5 +46,9 @@ pub enum AppEvent {
     ConnectivityServerCheckLoaded {
         connected: bool,
     },
+    BatteryInfoLoaded {
+        ok: bool,
+        text: alloc::string::String,
+    },
     Keypad(KeypadKey),
 }

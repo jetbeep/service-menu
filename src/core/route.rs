@@ -57,7 +57,7 @@ impl Route {
             Self::BarcodeScannerTest => "Placeholder. Press # to run action, * to go back.",
             Self::ConnectivityInfo => "Placeholder. Press # to run action, * to go back.",
             Self::BatteryInfo => "Placeholder. Press # to run action, * to go back.",
-            Self::ScreenColorTest => "Placeholder. Press # to run action, * to go back.",
+            Self::ScreenColorTest => "Shows display color stripes for visual panel verification.",
         }
     }
 }
