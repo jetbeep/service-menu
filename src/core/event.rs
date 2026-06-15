@@ -39,5 +39,12 @@ pub enum AppEvent {
         message: alloc::string::String,
     },
     BarcodeScanned(alloc::string::String),
+    ConnectivityInfoLoaded {
+        ok: bool,
+        text: alloc::string::String,
+    },
+    ConnectivityServerCheckLoaded {
+        connected: bool,
+    },
     Keypad(KeypadKey),
 }

@@ -2,7 +2,7 @@ use alloc::{format, string::String, vec, vec::Vec};
 use ::core::time::Duration;
 
 use jetbeep::bus::KeypadKey;
-use jetbeep::proto::bus::LockStatus;
+use jetbeep::proto::bus::{LockStatus, NetworkRegistrationStatus};
 use jetbeep::{executor, workq};
 use jetbeep_lvgl_dsl::prelude::{Obj, Widget};
 
@@ -40,6 +40,9 @@ pub struct App {
     lock_statuses_result_status: String,
     barcode_status: String,
     barcode_last_text: String,
+    connectivity_loading: bool,
+    connectivity_info_text: String,
+    connectivity_server_state: String,
 }
 
 impl App {
@@ -71,6 +74,9 @@ impl App {
             lock_statuses_result_status: String::from("No result yet"),
             barcode_status: String::from("Scanner stopped"),
             barcode_last_text: String::from("-"),
+            connectivity_loading: false,
+            connectivity_info_text: String::from("No modem info loaded yet"),
+            connectivity_server_state: String::from("Error"),
         }
     }
 
@@ -78,10 +84,16 @@ impl App {
         match event {
             AppEvent::Open(route) => {
                 self.reset_submenu_state(route);
+                self.route_stack.push(route);
+
                 if route == Route::BarcodeScannerTest {
                     self.start_barcode_scanner();
                 }
-                self.route_stack.push(route);
+
+                if route == Route::ConnectivityInfo {
+                    self.start_connectivity_load();
+                }
+
                 self.render();
             }
             AppEvent::Back => {
@@ -94,7 +106,10 @@ impl App {
                 }
             }
             AppEvent::Action => {
-                if self.current_route() != Route::MainMenu {
+                if self.current_route() == Route::ConnectivityInfo {
+                    self.start_connectivity_load();
+                    self.render();
+                } else if self.current_route() != Route::MainMenu {
                     self.action_count = self.action_count.saturating_add(1);
                     self.render();
                 }
@@ -184,6 +199,23 @@ impl App {
                     self.restart_barcode_scanner();
                     self.render();
                 }
+            }
+            AppEvent::ConnectivityInfoLoaded { ok, text } => {
+                self.connectivity_loading = false;
+                self.connectivity_info_text = if ok {
+                    text
+                } else {
+                    format!("Failed to load modem info: {}", text)
+                };
+                self.render();
+            }
+            AppEvent::ConnectivityServerCheckLoaded { connected } => {
+                self.connectivity_server_state = if connected {
+                    String::from("Connected")
+                } else {
+                    String::from("Error")
+                };
+                self.render();
             }
             AppEvent::Keypad(key) => self.handle_keypad(key),
         }
@@ -390,6 +422,18 @@ impl App {
         self.barcode_last_text.clone()
     }
 
+    pub fn connectivity_loading(&self) -> bool {
+        self.connectivity_loading
+    }
+
+    pub fn connectivity_info_text(&self) -> String {
+        self.connectivity_info_text.clone()
+    }
+
+    pub fn connectivity_server_state(&self) -> String {
+        self.connectivity_server_state.clone()
+    }
+
     fn keypad_status_text(&self) -> String {
         let required = self.required_keypad_mask();
         if (self.keypad_pressed_mask & required) == required {
@@ -453,6 +497,11 @@ impl App {
                         if route == Route::BarcodeScannerTest {
                             self.start_barcode_scanner();
                         }
+
+                        if route == Route::ConnectivityInfo {
+                            self.start_connectivity_load();
+                        }
+
                         self.route_stack.push(route);
                         self.render();
                     }
@@ -466,7 +515,11 @@ impl App {
                     }
                 }
                 KeypadKey::Hash => {
-                    self.action_count = self.action_count.saturating_add(1);
+                    if self.current_route() == Route::ConnectivityInfo {
+                        self.start_connectivity_load();
+                    } else {
+                        self.action_count = self.action_count.saturating_add(1);
+                    }
                     self.render();
                 }
                 _ => {}
@@ -822,6 +875,79 @@ impl App {
                 log::warn!("barcode_scanner_start failed: {}", err);
             }
         });
+    }
+
+    fn start_connectivity_load(&mut self) {
+        if self.connectivity_loading {
+            return;
+        }
+
+        self.connectivity_loading = true;
+        self.connectivity_info_text = String::from("Loading modem info...");
+        self.connectivity_server_state = String::from("In progress");
+
+        executor::run(async {
+            let event = match jetbeep::bus::modem_get_info().await {
+                Ok(info) => AppEvent::ConnectivityInfoLoaded {
+                    ok: true,
+                    text: App::format_connectivity_info(&info),
+                },
+                Err(err) => AppEvent::ConnectivityInfoLoaded {
+                    ok: false,
+                    text: format!("{}", err),
+                },
+            };
+
+            post_app_event(event);
+        });
+
+        executor::run(async {
+            let connected = jetbeep::bus::server_request(104, 10_000, &[])
+                .await
+                .is_ok();
+            post_app_event(AppEvent::ConnectivityServerCheckLoaded { connected });
+        });
+    }
+
+    fn format_connectivity_info(info: &jetbeep::bus::ModemInfo) -> String {
+        let mut lines: Vec<String> = Vec::new();
+
+        if let Some(modem) = info.modem_info.as_ref() {
+            lines.push(format!("IMEI: {}", modem.imei));
+        } else {
+            lines.push(String::from("IMEI: -"));
+        }
+
+        if let Some(sim) = info.sim_info.as_ref() {
+            lines.push(format!("SIM initialized: {}", sim.initialized));
+            lines.push(format!("IMSI: {}", sim.imsi));
+            lines.push(format!("ICCID: {}", sim.iccid));
+        } else {
+            lines.push(String::from("SIM: -"));
+        }
+
+        if let Some(net) = info.network_reg_info.as_ref() {
+            let status = NetworkRegistrationStatus::try_from(net.status)
+                .map(|v| format!("{:?}", v))
+                .unwrap_or_else(|_| format!("{}", net.status));
+            lines.push(format!("Network status: {}", status));
+            lines.push(format!("Operator: {} ({})", net.operator_name, net.mcc_mnc));
+            lines.push(format!("Cell: TAC={} CID={}", net.tracking_area_code, net.cell_id));
+            lines.push(format!("Band: {}", net.band));
+            lines.push(format!("PDP active: {}", net.pdp_activated));
+            lines.push(format!("IP: {}", net.ip_address));
+        } else {
+            lines.push(String::from("Network: -"));
+        }
+
+        if let Some(sig) = info.signal_info.as_ref() {
+            lines.push(format!("Signal RSPR: {} (idx {})", sig.rspr, sig.rspr_index));
+            lines.push(format!("Signal RSRQ: {} (idx {})", sig.rsrq, sig.rsrq_index));
+        } else {
+            lines.push(String::from("Signal: -"));
+        }
+
+        lines.join("\n")
     }
 
     fn start_open_all_locks(&mut self) {

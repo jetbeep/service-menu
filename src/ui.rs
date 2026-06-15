@@ -49,6 +49,7 @@ pub fn render(app: &App) -> Obj {
         Route::LockTestsGetStatuses => render_get_statuses_page(&root, app),
         Route::LockTestsGetStatusesResult => render_get_statuses_result_page(&root, app),
         Route::BarcodeScannerTest => render_barcode_scanner_page(&root, app),
+        Route::ConnectivityInfo => render_connectivity_info_page(&root, app),
         route => render_test_screen(&root, route, &app.action_text()),
     }
 
@@ -686,6 +687,72 @@ fn render_barcode_scanner_page(root: &Obj, app: &App) {
         .radius(10)
         .on_click(on_barcode_restart_click)
         .text("Restart (#)")
+        .text_color(Color::white());
+}
+
+fn render_connectivity_info_page(root: &Obj, app: &App) {
+    let title = Label::new(root);
+    title
+        .text(Route::ConnectivityInfo.title())
+        .text_color(Color::hex(TEXT));
+
+    let desc = Label::new(root);
+    desc.text("Modem information from modem_get_info().")
+        .long_mode(LvLabelLongMode::Wrap)
+        .text_color(Color::hex(MUTED));
+
+    let status = Label::new(root);
+    status
+        .text(if app.connectivity_loading() {
+            "Loading modem info..."
+        } else {
+            "Modem info loaded"
+        })
+        .text_color(Color::hex(PRIMARY));
+
+    let server = Label::new(root);
+    server
+        .text(&format!("Connected to server: {}", app.connectivity_server_state()))
+        .text_color(Color::hex(PRIMARY));
+
+    let info = Label::new(root);
+    info
+        .text(&app.connectivity_info_text())
+        .long_mode(LvLabelLongMode::Wrap)
+        .text_color(Color::hex(TEXT));
+
+    add_bottom_spacer(root);
+
+    let actions = Obj::new(root);
+    actions
+        .width(Size::Pct(100))
+        .height(Size::Px(ACTION_BUTTON_H + 8))
+        .bg_opa(0)
+        .border_width(0)
+        .flex_row()
+        .flex_align(FlexAlign::SpaceBetween, FlexAlign::Center, FlexAlign::Center)
+        .gap(12)
+        .remove_flag(LvObjFlag::SCROLLABLE);
+
+    let back = Button::new(&actions);
+    back.width(Size::Pct(48))
+        .height(Size::Px(ACTION_BUTTON_H))
+        .bg_color(Color::hex(CARD))
+        .border_width(2)
+        .border_color(Color::hex(0xD5DCE4))
+        .radius(10)
+        .on_click(on_back_click)
+        .text("Back (*)")
+        .text_color(Color::hex(TEXT));
+
+    let refresh = Button::new(&actions);
+    refresh.width(Size::Pct(48))
+        .height(Size::Px(ACTION_BUTTON_H))
+        .bg_color(Color::hex(PRIMARY))
+        .border_width(0)
+        .radius(10)
+        .on_click(on_action_click)
+        .text("Refresh (#)")
         .text_color(Color::white());
 }
 
