@@ -9,6 +9,8 @@ crate-type = ["rlib"]
 [features]
 default = ["simulator"]
 simulator = ["jetbeep_core/simulator"]
+force-http-api = []
+dev-screen-preview = []
 
 [dependencies]
 lvgl-dsl = { path = "../../lib/rust-libs/lvgl-dsl" }
