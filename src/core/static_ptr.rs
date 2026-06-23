@@ -20,7 +20,7 @@ impl<T> StaticPtr<T> {
 }
 
 pub fn dispatch_to<T: 'static>(holder: &'static StaticPtr<T>, f: impl FnOnce(&mut T) + 'static) {
-    jetbeep::workq::submit(Duration::from_secs(0), move |_| {
+    jetbeep_core::workq::submit(Duration::from_secs(0), move |_| {
         if let Some(target) = holder.get_mut() {
             f(target);
         }

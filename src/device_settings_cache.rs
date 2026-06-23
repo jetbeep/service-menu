@@ -1,7 +1,7 @@
 use ::core::time::Duration;
 
-use jetbeep::proto::DeviceSettings;
-use jetbeep::workq;
+use jetbeep_core::proto::DeviceSettings;
+use jetbeep_core::workq;
 
 enum CacheState {
     Uninitialized,

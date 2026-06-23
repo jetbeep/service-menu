@@ -12,8 +12,8 @@ use alloc::boxed::Box;
 use ::core::time::Duration;
 
 use futures::StreamExt;
-use jetbeep::{bus, executor, workq};
-use jetbeep::proto::keypad::ButtonType;
+use jetbeep_core::{bus, executor, workq};
+use jetbeep_core::proto::keypad::ButtonType;
 
 use crate::core::{
     app::App,
@@ -21,7 +21,7 @@ use crate::core::{
     event::{AppEvent, LockTarget},
 };
 
-fn keypad_has_letters(settings: &jetbeep::proto::DeviceSettings) -> bool {
+fn keypad_has_letters(settings: &jetbeep_core::proto::DeviceSettings) -> bool {
     settings
         .keypad_settings
         .as_ref()
@@ -37,7 +37,7 @@ fn keypad_has_letters(settings: &jetbeep::proto::DeviceSettings) -> bool {
 }
 
 fn lock_targets_from_settings(
-    settings: &jetbeep::proto::DeviceSettings,
+    settings: &jetbeep_core::proto::DeviceSettings,
 ) -> alloc::vec::Vec<LockTarget> {
     let mut targets = alloc::vec::Vec::new();
 

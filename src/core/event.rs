@@ -1,4 +1,4 @@
-use jetbeep::bus::{KeypadKey, LockStatuses};
+use jetbeep_core::bus::{KeypadKey, LockStatuses};
 
 use crate::core::route::Route;
 

@@ -1,7 +1,7 @@
 use alloc::{format, string::String};
 
-use jetbeep::bus::KeypadKey;
-use jetbeep_lvgl_dsl::prelude::*;
+use jetbeep_core::bus::KeypadKey;
+use lvgl_dsl::prelude::*;
 
 use crate::core::{
     app::App,
@@ -81,7 +81,7 @@ fn render_clock_overlay(root: &Obj, app: &App) {
 }
 
 fn format_utc_date() -> String {
-    let micros = jetbeep::unix_time();
+    let micros = jetbeep_core::unix_time();
     let total_seconds = (micros / 1_000_000) as i64;
     let days_since_epoch = total_seconds.div_euclid(86_400);
     let (year, month, day) = civil_from_days(days_since_epoch);
@@ -90,7 +90,7 @@ fn format_utc_date() -> String {
 }
 
 fn format_utc_time() -> String {
-    let micros = jetbeep::unix_time();
+    let micros = jetbeep_core::unix_time();
     let total_seconds = (micros / 1_000_000) as i64;
     let day_seconds = total_seconds.rem_euclid(86_400);
 

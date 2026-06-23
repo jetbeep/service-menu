@@ -1,10 +1,10 @@
 use alloc::{format, string::String, vec, vec::Vec};
 use ::core::time::Duration;
 
-use jetbeep::bus::KeypadKey;
-use jetbeep::proto::bus::{LockStatus, NetworkRegistrationStatus};
-use jetbeep::{executor, workq};
-use jetbeep_lvgl_dsl::prelude::{Obj, Widget};
+use jetbeep_core::bus::{JkvValue, KeypadKey};
+use jetbeep_core::proto::bus::{LockStatus, NetworkRegistrationStatus};
+use jetbeep_core::{executor, workq};
+use lvgl_dsl::prelude::{Obj, Widget};
 
 use crate::core::{
     app_dispatcher::post_app_event,
@@ -792,7 +792,7 @@ impl App {
         self.render();
 
         executor::run(async move {
-            let result = jetbeep::bus::lock_open(board_id, lock_id).await;
+            let result = jetbeep_core::bus::lock_open(board_id, lock_id).await;
             let (ok, message) = match result {
                 Ok(()) => (true, String::from("opened")),
                 Err(err) => (false, format!("{}", err)),
@@ -837,7 +837,7 @@ impl App {
         self.render();
 
         executor::run(async move {
-            let result = jetbeep::bus::lock_statuses_get(board_id).await;
+            let result = jetbeep_core::bus::lock_statuses_get(board_id).await;
             let (ok, statuses, message) = match result {
                 Ok(statuses) => (true, statuses, String::new()),
                 Err(err) => (false, Vec::new(), format!("{}", err)),
@@ -911,7 +911,7 @@ impl App {
     fn start_barcode_scanner(&mut self) {
         self.barcode_status = String::from("Waiting for scan...");
         executor::run(async {
-            if let Err(err) = jetbeep::bus::barcode_scanner_start().await {
+            if let Err(err) = jetbeep_core::bus::barcode_scanner_start().await {
                 log::warn!("barcode_scanner_start failed: {}", err);
             }
         });
@@ -920,7 +920,7 @@ impl App {
     fn stop_barcode_scanner(&mut self) {
         self.barcode_status = String::from("Scanner stopped");
         executor::run(async {
-            if let Err(err) = jetbeep::bus::barcode_scanner_stop().await {
+            if let Err(err) = jetbeep_core::bus::barcode_scanner_stop().await {
                 log::warn!("barcode_scanner_stop failed: {}", err);
             }
         });
@@ -929,10 +929,10 @@ impl App {
     fn restart_barcode_scanner(&mut self) {
         self.barcode_status = String::from("Waiting for next scan...");
         executor::run(async {
-            if let Err(err) = jetbeep::bus::barcode_scanner_stop().await {
+            if let Err(err) = jetbeep_core::bus::barcode_scanner_stop().await {
                 log::warn!("barcode_scanner_stop failed: {}", err);
             }
-            if let Err(err) = jetbeep::bus::barcode_scanner_start().await {
+            if let Err(err) = jetbeep_core::bus::barcode_scanner_start().await {
                 log::warn!("barcode_scanner_start failed: {}", err);
             }
         });
@@ -948,7 +948,7 @@ impl App {
         self.connectivity_server_state = String::from("In progress");
 
         executor::run(async {
-            let event = match jetbeep::bus::modem_get_info().await {
+            let event = match jetbeep_core::bus::modem_get_info().await {
                 Ok(info) => AppEvent::ConnectivityInfoLoaded {
                     ok: true,
                     text: App::format_connectivity_info(&info),
@@ -963,14 +963,20 @@ impl App {
         });
 
         executor::run(async {
-            let connected = jetbeep::bus::server_request(104, 10_000, &[])
-                .await
-                .is_ok();
+            let connected = jetbeep_core::bus::server_request_ex(
+                JkvValue::Collection(vec![]),
+                jetbeep_core::bus::ServerRequestParams {
+                    request_type: 104,
+                    timeout_ms: 10_000,
+                },
+            )
+            .await
+            .is_ok();
             post_app_event(AppEvent::ConnectivityServerCheckLoaded { connected });
         });
     }
 
-    fn format_connectivity_info(info: &jetbeep::bus::ModemInfo) -> String {
+    fn format_connectivity_info(info: &jetbeep_core::bus::ModemInfo) -> String {
         let mut lines: Vec<String> = Vec::new();
 
         if let Some(modem) = info.modem_info.as_ref() {
@@ -1020,7 +1026,7 @@ impl App {
         self.battery_info_text = String::from("Loading battery info...");
 
         executor::run(async {
-            let event = match jetbeep::bus::battery_get_info().await {
+            let event = match jetbeep_core::bus::battery_get_info().await {
                 Ok(info) => AppEvent::BatteryInfoLoaded {
                     ok: true,
                     text: App::format_battery_info(&info),
@@ -1035,7 +1041,7 @@ impl App {
         });
     }
 
-    fn format_battery_info(info: &jetbeep::bus::BatteryInfo) -> String {
+    fn format_battery_info(info: &jetbeep_core::bus::BatteryInfo) -> String {
         let status_text = match info.status {
             0 => "Unknown",
             1 => "Charging",
@@ -1093,7 +1099,7 @@ impl App {
         executor::run(async move {
             let total = targets.len();
             for (index, target) in targets.into_iter().enumerate() {
-                let result = jetbeep::bus::lock_open(target.board_id, target.lock_id).await;
+                let result = jetbeep_core::bus::lock_open(target.board_id, target.lock_id).await;
                 let (ok, message) = match result {
                     Ok(()) => (true, String::from("opened")),
                     Err(err) => (false, format!("{}", err)),
@@ -1152,14 +1158,14 @@ impl App {
 
         self.sleep_requested = true;
         executor::run(async {
-            if let Err(err) = jetbeep::bus::sleep().await {
+            if let Err(err) = jetbeep_core::bus::sleep().await {
                 log::warn!("service-menu sleep failed: {}", err);
             }
         });
     }
 
     fn current_unix_seconds() -> i64 {
-        (jetbeep::unix_time() / 1_000_000) as i64
+        (jetbeep_core::unix_time() / 1_000_000) as i64
     }
 
     fn required_keypad_mask(&self) -> u32 {

@@ -8,12 +8,12 @@ crate-type = ["rlib"]
 
 [features]
 default = ["simulator"]
-simulator = ["jetbeep/simulator"]
+simulator = ["jetbeep_core/simulator"]
 force-http-api = []
 dev-screen-preview = []
 
 [dependencies]
-jetbeep = { path = "../../rust/lib/jetbeep-desktop" }
-jetbeep-lvgl-dsl = { path = "../../lib/jetbeep-lvgl-dsl" }
+jetbeep_core = { package = "jetbeep-core", path = "../../lib/rust-libs/jetbeep-core" }
+lvgl-dsl = { path = "../../lib/rust-libs/lvgl-dsl" }
 log = "0.4"
 futures = "0.3"
