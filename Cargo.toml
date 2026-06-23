@@ -1,7 +1,7 @@
 [package]
 name = "project_app"
-version = "0.1.0"
-edition = "2021"
+version = "0.1.1"
+edition = "2024"
 
 [lib]
 crate-type = ["rlib"]
@@ -9,11 +9,17 @@ crate-type = ["rlib"]
 [features]
 default = ["simulator"]
 simulator = ["jetbeep_core/simulator"]
-force-http-api = []
-dev-screen-preview = []
 
 [dependencies]
-jetbeep_core = { package = "jetbeep-core", path = "../../lib/rust-libs/jetbeep-core" }
 lvgl-dsl = { path = "../../lib/rust-libs/lvgl-dsl" }
 log = "0.4"
-futures = "0.3"
+futures = { version = "0.3", default-features = false, features = ["alloc"] }
+
+[target.'cfg(target_os = "none")'.dependencies]
+jetbeep_core = { package = "jetbeep-core", path = "../../lib/rust-libs/jetbeep-core", default-features = false, features = ["platform-zephyr"] }
+
+[target.'cfg(not(target_os = "none"))'.dependencies]
+jetbeep_core = { package = "jetbeep-core", path = "../../lib/rust-libs/jetbeep-core", default-features = false, features = ["platform-desktop"] }
+
+[patch.crates-io]
+zephyr-build = { path = "../../../modules/lang/rust/zephyr-build" }
