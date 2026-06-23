@@ -1,8 +1,10 @@
-use jetbeep::lvgl::*;
+#![no_std]
+
+use jetbeep::lvgl::prelude::*;
 
 pub unsafe fn app_main() {
-    let scr = lv_screen_active();
-    let label = lv_label_create(&scr);
-    lv_label_set_text(&label, "service-menu: bootstrap app");
-    lv_obj_align(&label, LvAlign::Center, 0, 0);
+    let screen = Screen::active();
+    Label::new(&screen)
+        .align(LvAlign::Center, 0, 0)
+        .text("service-menu: bootstrap app");
 }
