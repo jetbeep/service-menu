@@ -143,3 +143,7 @@ pub unsafe fn app_main() {
     #[cfg(feature = "simulator")]
     executor::run(barcode_forward_task());
 }
+
+pub unsafe fn app_init_screen() -> i32 {
+    0
+}
