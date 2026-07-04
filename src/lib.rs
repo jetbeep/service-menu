@@ -130,7 +130,12 @@ async fn load_keypad_layout_task() {
 pub unsafe fn app_main() {
     log::info!("start service-menu app");
 
-    let app = Box::leak(Box::new(App::new()));
+    let slot = unsafe { &mut *APP_SLOT.0.get() };
+    *slot = Some(Box::new(App::new()));
+    // SAFETY: the App lives in APP_SLOT until app_teardown(); the dispatcher
+    // pointer is cleared there before the App is dropped.
+    let app: &'static mut App =
+        unsafe { &mut *((slot.as_mut().unwrap().as_mut()) as *mut App) };
     app.render();
     bind_app(app);
 
@@ -142,6 +147,34 @@ pub unsafe fn app_main() {
 
     #[cfg(feature = "simulator")]
     executor::run(barcode_forward_task());
+}
+
+/// Owns the live `App` between `app_main` and `app_teardown`.
+struct AppSlot(::core::cell::UnsafeCell<Option<Box<App>>>);
+// SAFETY: only accessed from the single LVGL/workq thread.
+unsafe impl Sync for AppSlot {}
+static APP_SLOT: AppSlot = AppSlot(::core::cell::UnsafeCell::new(None));
+
+/// Soft-kill teardown: delete the UI tree and drop the App.
+///
+/// The platform entry point bumps the app generation and cancels stale
+/// executor tasks *before* calling this, so no old async work can resume
+/// while (or after) the UI is destroyed.
+pub unsafe fn app_teardown() {
+    crate::core::app_dispatcher::unbind_app();
+
+    let slot = unsafe { &mut *APP_SLOT.0.get() };
+    if let Some(mut app) = slot.take() {
+        app.teardown();
+    }
+
+    device_settings_cache::reset_if_not_loaded();
+
+    #[cfg(feature = "simulator")]
+    {
+        bus::keypad_unsubscribe();
+        bus::barcode_unsubscribe();
+    }
 }
 
 pub unsafe fn app_init_screen() -> i32 {

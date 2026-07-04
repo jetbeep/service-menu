@@ -267,6 +267,13 @@ impl App {
         self.root = Some(crate::ui::render(self));
     }
 
+    /// Delete the whole UI tree (soft-kill path).
+    pub fn teardown(&mut self) {
+        if let Some(root) = self.root.take() {
+            root.delete();
+        }
+    }
+
     pub fn current_route(&self) -> Route {
         self.route_stack.last().copied().unwrap_or(Route::MainMenu)
     }

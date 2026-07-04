@@ -14,6 +14,11 @@ impl<T> StaticPtr<T> {
         unsafe { *self.0.get() = ptr; }
     }
 
+    /// Clear the pointer so in-flight callbacks become safe no-ops.
+    pub fn clear(&self) {
+        unsafe { *self.0.get() = core::ptr::null_mut(); }
+    }
+
     pub fn get_mut(&self) -> Option<&mut T> {
         unsafe { (*self.0.get()).as_mut() }
     }

@@ -39,6 +39,18 @@ pub fn set_failed() {
     *state = CacheState::Failed;
 }
 
+/// Soft-kill teardown hook: a load in flight when the app was killed will
+/// never complete (its completion is generation-gated), so a stuck `Loading`
+/// or a transient `Failed` state must not survive into the next launch.
+/// Successfully loaded settings stay cached.
+pub fn reset_if_not_loaded() {
+    let state = unsafe { &mut *DEVICE_SETTINGS_CACHE.0.get() };
+    match state {
+        CacheState::Ready(_) => {}
+        _ => *state = CacheState::Uninitialized,
+    }
+}
+
 pub fn get_cached() -> Option<DeviceSettings> {
     let state = unsafe { &*DEVICE_SETTINGS_CACHE.0.get() };
     match state {
