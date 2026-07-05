@@ -975,6 +975,7 @@ impl App {
                 jetbeep_core::bus::ServerRequestParams {
                     request_type: 104,
                     timeout_ms: 10_000,
+                    ..Default::default()
                 },
             )
             .await
