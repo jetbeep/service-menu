@@ -145,7 +145,7 @@ impl App {
             }
             AppEvent::LockTargetsLoaded(targets) => {
                 self.lock_targets = targets;
-                self.lock_open_all_total = self.lock_targets.len() as u32;
+                self.lock_open_all_total = self.enabled_lock_count() as u32;
                 self.render();
             }
             AppEvent::LockOpenAll => {
@@ -160,6 +160,9 @@ impl App {
                 index,
                 total,
             } => {
+                // Opening every lock can take longer than the AFK timeout, so
+                // treat each step as activity to keep the app awake.
+                self.mark_user_activity();
                 if ok {
                     self.lock_open_all_ok = self.lock_open_all_ok.saturating_add(1);
                 } else {
@@ -178,6 +181,7 @@ impl App {
                 self.render();
             }
             AppEvent::LockOpenAllFinished => {
+                self.mark_user_activity();
                 self.lock_open_all_running = false;
                 self.push_lock_open_all_line(format!(
                     "Done: {} OK, {} ERROR",
@@ -319,7 +323,11 @@ impl App {
     }
 
     pub fn lock_open_all_configured_count(&self) -> usize {
-        self.lock_targets.len()
+        self.enabled_lock_count()
+    }
+
+    fn enabled_lock_count(&self) -> usize {
+        self.lock_targets.iter().filter(|t| t.enabled).count()
     }
 
     pub fn lock_open_all_running(&self) -> bool {
@@ -1086,24 +1094,39 @@ impl App {
             return;
         }
 
+        let targets: Vec<LockTarget> = self
+            .lock_targets
+            .iter()
+            .filter(|t| t.enabled)
+            .copied()
+            .collect();
+        let skipped = self.lock_targets.len() - targets.len();
+
         self.lock_open_all_running = true;
         self.lock_open_all_opened = 0;
         self.lock_open_all_ok = 0;
         self.lock_open_all_err = 0;
-        self.lock_open_all_total = self.lock_targets.len() as u32;
+        self.lock_open_all_total = targets.len() as u32;
         self.lock_open_all_lines.clear();
 
-        if self.lock_targets.is_empty() {
-            self.push_lock_open_all_line(String::from("No locks found in settings"));
+        if targets.is_empty() {
+            self.push_lock_open_all_line(if skipped > 0 {
+                format!("No enabled locks ({} disabled skipped)", skipped)
+            } else {
+                String::from("No locks found in settings")
+            });
             self.lock_open_all_running = false;
             self.render();
             return;
         }
 
-        self.push_lock_open_all_line(format!("Open all started ({} locks)", self.lock_targets.len()));
+        self.push_lock_open_all_line(if skipped > 0 {
+            format!("Open all started ({} locks, {} disabled skipped)", targets.len(), skipped)
+        } else {
+            format!("Open all started ({} locks)", targets.len())
+        });
         self.render();
 
-        let targets = self.lock_targets.clone();
         executor::run(async move {
             let total = targets.len();
             for (index, target) in targets.into_iter().enumerate() {
@@ -1138,6 +1161,13 @@ impl App {
 
     fn handle_afk_tick(&mut self) {
         if self.sleep_requested {
+            return;
+        }
+
+        // Keep the AFK timer refreshed while "open all locks" is running:
+        // the whole operation can easily exceed the AFK timeout.
+        if self.lock_open_all_running {
+            self.mark_user_activity();
             return;
         }
 
@@ -1264,7 +1294,7 @@ impl App {
             self.lock_open_all_opened = 0;
             self.lock_open_all_ok = 0;
             self.lock_open_all_err = 0;
-            self.lock_open_all_total = self.lock_targets.len() as u32;
+            self.lock_open_all_total = self.enabled_lock_count() as u32;
             self.lock_open_all_lines.clear();
         }
 

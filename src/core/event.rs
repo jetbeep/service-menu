@@ -6,6 +6,8 @@ use crate::core::route::Route;
 pub struct LockTarget {
     pub board_id: u32,
     pub lock_id: u32,
+    /// `false` when the port has no lock settings (lock disabled in device settings).
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone)]

@@ -42,20 +42,38 @@ fn lock_targets_from_settings(
     let mut targets = alloc::vec::Vec::new();
 
     if let Some(lock_settings) = settings.lock_settings.as_ref() {
+        log::info!(
+            "service-menu: device settings contain {} lock board(s)",
+            lock_settings.boards.len()
+        );
         for board in &lock_settings.boards {
+            let enabled_ports = board
+                .port_settings
+                .iter()
+                .filter(|p| p.lock_settings.is_some())
+                .count();
+            log::info!(
+                "service-menu: board {}: {} port(s), {} with lock settings",
+                board.id,
+                board.port_settings.len(),
+                enabled_ports
+            );
             for port in &board.port_settings {
                 targets.push(LockTarget {
                     board_id: board.id,
                     lock_id: port.id,
+                    enabled: port.lock_settings.is_some(),
                 });
             }
         }
+    } else {
+        log::warn!("service-menu: device settings have no lock settings");
     }
 
     targets
 }
 
-#[cfg(feature = "simulator")]
+#[cfg(any(feature = "simulator", target_os = "none"))]
 async fn keypad_forward_task() {
     // Ensure this app owns the live keypad stream sender for this run.
     bus::keypad_unsubscribe();
@@ -65,7 +83,7 @@ async fn keypad_forward_task() {
     }
 }
 
-#[cfg(feature = "simulator")]
+#[cfg(any(feature = "simulator", target_os = "none"))]
 async fn barcode_forward_task() {
     // Ensure this app owns the live barcode stream sender for this run.
     bus::barcode_unsubscribe();
@@ -142,10 +160,10 @@ pub unsafe fn app_main() {
     executor::run(clock_tick_task());
     executor::run(load_keypad_layout_task());
 
-    #[cfg(feature = "simulator")]
+    #[cfg(any(feature = "simulator", target_os = "none"))]
     executor::run(keypad_forward_task());
 
-    #[cfg(feature = "simulator")]
+    #[cfg(any(feature = "simulator", target_os = "none"))]
     executor::run(barcode_forward_task());
 }
 
@@ -170,7 +188,7 @@ pub unsafe fn app_teardown() {
 
     device_settings_cache::reset_if_not_loaded();
 
-    #[cfg(feature = "simulator")]
+    #[cfg(any(feature = "simulator", target_os = "none"))]
     {
         bus::keypad_unsubscribe();
         bus::barcode_unsubscribe();
