@@ -16,6 +16,14 @@ use crate::core::{
 const MAX_LOCK_LINES: usize = 256;
 const AFK_TIMEOUT_SECS: i64 = 60;
 
+fn lock_status_for_id(statuses: &[LockStatus], lock_id: u32) -> LockStatus {
+    lock_id
+        .checked_sub(1)
+        .and_then(|index| statuses.get(index as usize))
+        .copied()
+        .unwrap_or(LockStatus::Disabled)
+}
+
 pub struct App {
     route_stack: Stack<Route>,
     root: Option<Obj>,
@@ -882,7 +890,7 @@ impl App {
         let mut lines: Vec<String> = Vec::new();
 
         for lock_id in locks {
-            let state = statuses.get(lock_id as usize).copied().unwrap_or(LockStatus::Disabled);
+            let state = lock_status_for_id(&statuses, lock_id);
 
             let state_label = match state {
                 LockStatus::Closed => {
@@ -1312,5 +1320,19 @@ impl App {
             self.lock_statuses_input_status = String::from("Enter board_id");
             self.lock_statuses_result_status = String::from("No result yet");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_vector_uses_one_based_lock_ids() {
+        let statuses = [LockStatus::Opened, LockStatus::Closed, LockStatus::Opened, LockStatus::Closed];
+
+        assert_eq!(lock_status_for_id(&statuses, 1), LockStatus::Opened);
+        assert_eq!(lock_status_for_id(&statuses, 4), LockStatus::Closed);
+        assert_eq!(lock_status_for_id(&statuses, 0), LockStatus::Disabled);
     }
 }
