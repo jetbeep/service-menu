@@ -24,7 +24,61 @@ const NUMPAD_KEY_H: i32 = OPEN_SPEC_ACTION_BUTTON_H;
 const NUMPAD_GAP: i32 = 6;
 const NUMPAD_ROWS: i32 = 4;
 
-pub fn render(app: &App) -> Obj {
+/// Widget tree of the current route, plus handles to the labels that change
+/// without user input (clock overlay, open-all progress) so they can be
+/// updated in place.
+pub struct Ui {
+    root: Obj,
+    date: Label,
+    afk: Label,
+    time: Label,
+    open_all: Option<OpenAllView>,
+}
+
+/// Labels of the open-all page that change while a run is in progress.
+struct OpenAllView {
+    summary: Label,
+    results: Label,
+    back: Label,
+    run: Label,
+}
+
+impl OpenAllView {
+    fn update(&self, app: &App) {
+        let running = app.lock_open_all_running();
+        self.summary.text(&app.lock_open_all_summary_text());
+        self.results.text(&app.lock_open_all_results_text());
+        self.back.text(if running { "Stop (*)" } else { "Back (*)" });
+        self.run.text(if running { "Running..." } else { "Run (#)" });
+    }
+}
+
+impl Ui {
+    /// Refresh the clock overlay without touching the rest of the tree.
+    ///
+    /// Rebuilding the tree here instead would delete the button under a
+    /// finger, and LVGL drops a click whose pressed object was deleted.
+    pub fn update_clock(&self, app: &App) {
+        self.date.text(&format_utc_date());
+        self.afk.text(&app.afk_countdown_text());
+        self.time.text(&format_utc_time());
+    }
+
+    /// Refresh the open-all progress; does nothing when another page is shown.
+    pub fn update_open_all(&self, app: &App) {
+        if let Some(view) = self.open_all.as_ref() {
+            view.update(app);
+        }
+    }
+
+    /// Delete the whole tree. The label handles are children of `root` and
+    /// are consumed together with it, so none can outlive the LVGL objects.
+    pub fn delete(self) {
+        self.root.delete();
+    }
+}
+
+pub fn render(app: &App) -> Ui {
     let screen = Screen::active();
     let root = Obj::new(&screen);
     root.width(Size::Pct(100))
@@ -37,13 +91,14 @@ pub fn render(app: &App) -> Obj {
         .gap(ROOT_GAP)
         .remove_flag(LvObjFlag::SCROLLABLE);
 
-    render_clock_overlay(&root, app);
+    let (date, afk, time) = render_clock_overlay(&root);
+    let mut open_all = None;
 
     match app.current_route() {
         Route::MainMenu => render_main_menu(&root),
         Route::KeypadTest => render_keypad_test(&root, app),
         Route::LockTests => render_lock_tests_menu(&root),
-        Route::LockTestsOpenAll => render_open_all_page(&root, app),
+        Route::LockTestsOpenAll => open_all = Some(render_open_all_page(&root, app)),
         Route::LockTestsOpenSpecificBoard => render_open_specific_board_page(&root, app),
         Route::LockTestsOpenSpecificLock => render_open_specific_lock_page(&root, app),
         Route::LockTestsGetStatuses => render_get_statuses_page(&root, app),
@@ -54,30 +109,35 @@ pub fn render(app: &App) -> Obj {
         Route::ScreenColorTest => render_screen_color_test_page(&root),
     }
 
-    root
+    let ui = Ui {
+        root,
+        date,
+        afk,
+        time,
+        open_all,
+    };
+    ui.update_clock(app);
+    ui
 }
 
-fn render_clock_overlay(root: &Obj, app: &App) {
+/// Creates the empty date, AFK and time labels; `Ui::update_clock` fills them.
+fn render_clock_overlay(root: &Obj) -> (Label, Label, Label) {
     let date = Label::new(root);
-    date
-        .add_flag(LvObjFlag::FLOATING | LvObjFlag::IGNORE_LAYOUT)
+    date.add_flag(LvObjFlag::FLOATING | LvObjFlag::IGNORE_LAYOUT)
         .align(LvAlign::TopRight, 0, 0)
-        .text(&format_utc_date())
         .text_color(Color::hex(MUTED));
 
     let afk = Label::new(root);
-    afk
-        .add_flag(LvObjFlag::FLOATING | LvObjFlag::IGNORE_LAYOUT)
+    afk.add_flag(LvObjFlag::FLOATING | LvObjFlag::IGNORE_LAYOUT)
         .align(LvAlign::TopRight, -96, 0)
-        .text(&app.afk_countdown_text())
         .text_color(Color::hex(MUTED));
 
     let time = Label::new(root);
-    time
-        .add_flag(LvObjFlag::FLOATING | LvObjFlag::IGNORE_LAYOUT)
+    time.add_flag(LvObjFlag::FLOATING | LvObjFlag::IGNORE_LAYOUT)
         .align(LvAlign::TopRight, 0, 18)
-        .text(&format_utc_time())
         .text_color(Color::hex(MUTED));
+
+    (date, afk, time)
 }
 
 fn format_utc_date() -> String {
@@ -268,7 +328,7 @@ fn render_lock_tests_menu(root: &Obj) {
         .text_color(Color::hex(TEXT));
 }
 
-fn render_open_all_page(root: &Obj, app: &App) {
+fn render_open_all_page(root: &Obj, app: &App) -> OpenAllView {
     let title = Label::new(root);
     title.text(Route::LockTestsOpenAll.title()).text_color(Color::hex(TEXT));
 
@@ -284,7 +344,6 @@ fn render_open_all_page(root: &Obj, app: &App) {
 
     let summary = Label::new(root);
     summary
-        .text(&app.lock_open_all_summary_text())
         .long_mode(LvLabelLongMode::Wrap)
         .text_color(Color::hex(PRIMARY));
 
@@ -301,7 +360,6 @@ fn render_open_all_page(root: &Obj, app: &App) {
     let results = Label::new(&results_panel);
     results
         .width(Size::Pct(100))
-        .text(&app.lock_open_all_results_text())
         .long_mode(LvLabelLongMode::Wrap)
         .text_color(Color::hex(TEXT));
 
@@ -323,9 +381,11 @@ fn render_open_all_page(root: &Obj, app: &App) {
         .border_width(2)
         .border_color(Color::hex(0xD5DCE4))
         .radius(10)
-        .on_click(on_back_click)
-        .text("Back (*)")
-        .text_color(Color::hex(TEXT));
+        .on_click(on_back_click);
+    // Own labels rather than `Button::text`, which creates a new label on
+    // every call and so cannot be updated in place.
+    let back_label = Label::new(&back);
+    back_label.align(LvAlign::Center, 0, 0).text_color(Color::hex(TEXT));
 
     let run = Button::new(&actions);
     run.width(Size::Pct(48))
@@ -333,13 +393,18 @@ fn render_open_all_page(root: &Obj, app: &App) {
         .bg_color(Color::hex(PRIMARY))
         .border_width(0)
         .radius(10)
-        .on_click(on_lock_open_all_run_click)
-        .text(if app.lock_open_all_running() {
-            "Running..."
-        } else {
-            "Run (#)"
-        })
-        .text_color(Color::white());
+        .on_click(on_lock_open_all_run_click);
+    let run_label = Label::new(&run);
+    run_label.align(LvAlign::Center, 0, 0).text_color(Color::white());
+
+    let view = OpenAllView {
+        summary,
+        results,
+        back: back_label,
+        run: run_label,
+    };
+    view.update(app);
+    view
 }
 
 fn render_open_specific_board_page(root: &Obj, app: &App) {

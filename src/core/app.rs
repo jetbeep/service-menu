@@ -1,10 +1,9 @@
-use alloc::{format, string::String, vec, vec::Vec};
-use ::core::time::Duration;
+use alloc::{format, rc::Rc, string::String, vec, vec::Vec};
+use ::core::{cell::Cell, time::Duration};
 
 use jetbeep_core::bus::{JkvValue, KeypadKey};
 use jetbeep_core::proto::bus::{LockStatus, NetworkRegistrationStatus};
 use jetbeep_core::{executor, workq};
-use lvgl_dsl::prelude::{Obj, Widget};
 
 use crate::core::{
     app_dispatcher::post_app_event,
@@ -14,7 +13,7 @@ use crate::core::{
 };
 
 const MAX_LOCK_LINES: usize = 256;
-const AFK_TIMEOUT_SECS: i64 = 60;
+const AFK_TIMEOUT_SECS: u32 = 60;
 
 fn lock_status_for_id(statuses: &[LockStatus], lock_id: u32) -> LockStatus {
     lock_id
@@ -26,13 +25,15 @@ fn lock_status_for_id(statuses: &[LockStatus], lock_id: u32) -> LockStatus {
 
 pub struct App {
     route_stack: Stack<Route>,
-    root: Option<Obj>,
+    ui: Option<crate::ui::Ui>,
     action_count: u32,
     keypad_has_letters: bool,
     keypad_pressed_mask: u32,
     keypad_last_pressed: Option<KeypadKey>,
     lock_targets: Vec<LockTarget>,
     lock_open_all_running: bool,
+    /// Set to `true` to make the running open-all task stop before its next lock.
+    lock_open_all_cancel: Option<Rc<Cell<bool>>>,
     lock_open_all_total: u32,
     lock_open_all_opened: u32,
     lock_open_all_ok: u32,
@@ -54,7 +55,9 @@ pub struct App {
     connectivity_server_state: String,
     battery_loading: bool,
     battery_info_text: String,
-    last_user_activity_secs: i64,
+    /// Clock ticks since the last user activity. Counted per tick rather than
+    /// derived from `unix_time`, which jumps whenever the mainboard sets the time.
+    idle_secs: u32,
     sleep_requested: bool,
 }
 
@@ -62,16 +65,16 @@ impl App {
     pub fn new() -> Self {
         let mut route_stack = Stack::new();
         route_stack.push(Route::MainMenu);
-        let now_secs = Self::current_unix_seconds();
         Self {
             route_stack,
-            root: None,
+            ui: None,
             action_count: 0,
             keypad_has_letters: false,
             keypad_pressed_mask: 0,
             keypad_last_pressed: None,
             lock_targets: Vec::new(),
             lock_open_all_running: false,
+            lock_open_all_cancel: None,
             lock_open_all_total: 0,
             lock_open_all_opened: 0,
             lock_open_all_ok: 0,
@@ -93,7 +96,7 @@ impl App {
             connectivity_server_state: String::from("Error"),
             battery_loading: false,
             battery_info_text: String::from("No battery info loaded yet"),
-            last_user_activity_secs: now_secs,
+            idle_secs: 0,
             sleep_requested: false,
         }
     }
@@ -102,26 +105,13 @@ impl App {
         match event {
             AppEvent::Open(route) => {
                 self.mark_user_activity();
-                self.reset_submenu_state(route);
-                self.route_stack.push(route);
-
-                if route == Route::BarcodeScannerTest {
-                    self.start_barcode_scanner();
-                }
-
-                if route == Route::ConnectivityInfo {
-                    self.start_connectivity_load();
-                }
-
-                if route == Route::BatteryInfo {
-                    self.start_battery_load();
-                }
-
-                self.render();
+                self.open_route(route);
             }
             AppEvent::Back => {
                 self.mark_user_activity();
-                if self.route_stack.len() > 1 {
+                if self.lock_open_all_running && self.current_route() == Route::LockTestsOpenAll {
+                    self.stop_open_all_locks();
+                } else if self.route_stack.len() > 1 {
                     if self.current_route() == Route::BarcodeScannerTest {
                         self.stop_barcode_scanner();
                     }
@@ -145,7 +135,7 @@ impl App {
             AppEvent::SleepRequested => self.request_sleep(),
             AppEvent::Tick => {
                 self.handle_afk_tick();
-                self.render();
+                self.refresh_clock();
             }
             AppEvent::KeypadLayoutLoaded(has_letters) => {
                 self.keypad_has_letters = has_letters;
@@ -168,9 +158,11 @@ impl App {
                 index,
                 total,
             } => {
-                // Opening every lock can take longer than the AFK timeout, so
-                // treat each step as activity to keep the app awake.
-                self.mark_user_activity();
+                // A step queued just before Stop was handled belongs to a run
+                // that is already over.
+                if !self.lock_open_all_running {
+                    return;
+                }
                 if ok {
                     self.lock_open_all_ok = self.lock_open_all_ok.saturating_add(1);
                 } else {
@@ -186,17 +178,22 @@ impl App {
                     if ok { "OK" } else { "ERROR" },
                     message
                 ));
-                self.render();
+                self.refresh_open_all();
             }
             AppEvent::LockOpenAllFinished => {
+                if !self.lock_open_all_running {
+                    return;
+                }
                 self.mark_user_activity();
                 self.lock_open_all_running = false;
+                self.lock_open_all_cancel = None;
                 self.push_lock_open_all_line(format!(
                     "Done: {} OK, {} ERROR",
                     self.lock_open_all_ok,
                     self.lock_open_all_err
                 ));
-                self.render();
+                self.refresh_open_all();
+                self.refresh_clock();
             }
             AppEvent::LockOpenSpecificResult {
                 board_id,
@@ -273,16 +270,30 @@ impl App {
     }
 
     pub fn render(&mut self) {
-        if let Some(root) = self.root.take() {
-            root.delete();
+        if let Some(ui) = self.ui.take() {
+            ui.delete();
         }
-        self.root = Some(crate::ui::render(self));
+        self.ui = Some(crate::ui::render(self));
+    }
+
+    fn refresh_clock(&self) {
+        if let Some(ui) = self.ui.as_ref() {
+            ui.update_clock(self);
+        }
+    }
+
+    /// Open-all results arrive every few hundred ms; updating the page in place
+    /// keeps Back/Run tappable and the results scroll position intact.
+    fn refresh_open_all(&self) {
+        if let Some(ui) = self.ui.as_ref() {
+            ui.update_open_all(self);
+        }
     }
 
     /// Delete the whole UI tree (soft-kill path).
     pub fn teardown(&mut self) {
-        if let Some(root) = self.root.take() {
-            root.delete();
+        if let Some(ui) = self.ui.take() {
+            ui.delete();
         }
     }
 
@@ -505,6 +516,9 @@ impl App {
     }
 
     pub fn afk_countdown_text(&self) -> String {
+        if self.afk_paused() {
+            return String::from("AFK: paused");
+        }
         format!("AFK: {}s", self.afk_seconds_left())
     }
 
@@ -569,20 +583,7 @@ impl App {
                 match key {
                     KeypadKey::Digit(d) => {
                         if let Some(route) = Route::from_menu_digit(d) {
-                            if route == Route::BarcodeScannerTest {
-                                self.start_barcode_scanner();
-                            }
-
-                            if route == Route::ConnectivityInfo {
-                                self.start_connectivity_load();
-                            }
-
-                            if route == Route::BatteryInfo {
-                                self.start_battery_load();
-                            }
-
-                            self.route_stack.push(route);
-                            self.render();
+                            self.open_route(route);
                         }
                     }
                     KeypadKey::Hash => self.request_sleep(),
@@ -640,7 +641,9 @@ impl App {
             Route::LockTestsOpenAll => match key {
                 KeypadKey::Hash => self.start_open_all_locks(),
                 KeypadKey::Star => {
-                    if self.route_stack.len() > 1 {
+                    if self.lock_open_all_running {
+                        self.stop_open_all_locks();
+                    } else if self.route_stack.len() > 1 {
                         self.route_stack.pop();
                         self.render();
                     }
@@ -740,6 +743,22 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// Single entry point for opening a screen, shared by touch and keypad so
+    /// both start the screen from the same clean state.
+    fn open_route(&mut self, route: Route) {
+        self.reset_submenu_state(route);
+        self.route_stack.push(route);
+
+        match route {
+            Route::BarcodeScannerTest => self.start_barcode_scanner(),
+            Route::ConnectivityInfo => self.start_connectivity_load(),
+            Route::BatteryInfo => self.start_battery_load(),
+            _ => {}
+        }
+
+        self.render();
     }
 
     fn exit_to_main_menu(&mut self) {
@@ -1135,10 +1154,19 @@ impl App {
         });
         self.render();
 
+        let cancel = Rc::new(Cell::new(false));
+        self.lock_open_all_cancel = Some(cancel.clone());
         executor::run(async move {
             let total = targets.len();
             for (index, target) in targets.into_iter().enumerate() {
+                if cancel.get() {
+                    return;
+                }
                 let result = jetbeep_core::bus::lock_open(target.board_id, target.lock_id).await;
+                // The lock was already commanded, but the run is over: report nothing.
+                if cancel.get() {
+                    return;
+                }
                 let (ok, message) = match result {
                     Ok(()) => (true, String::from("opened")),
                     Err(err) => (false, format!("{}", err)),
@@ -1156,8 +1184,26 @@ impl App {
                 workq::delay(Duration::from_millis(120)).await;
             }
 
-            post_app_event(AppEvent::LockOpenAllFinished);
+            if !cancel.get() {
+                post_app_event(AppEvent::LockOpenAllFinished);
+            }
         });
+    }
+
+    /// Stop the open-all run before its next lock. A lock whose command is
+    /// already in flight on the bus still opens; its result is not shown.
+    fn stop_open_all_locks(&mut self) {
+        if let Some(cancel) = self.lock_open_all_cancel.take() {
+            cancel.set(true);
+        }
+        self.lock_open_all_running = false;
+        self.push_lock_open_all_line(format!(
+            "Stopped: {} OK, {} ERROR",
+            self.lock_open_all_ok,
+            self.lock_open_all_err
+        ));
+        self.refresh_open_all();
+        self.refresh_clock();
     }
 
     fn push_lock_open_all_line(&mut self, line: String) {
@@ -1168,33 +1214,28 @@ impl App {
     }
 
     fn handle_afk_tick(&mut self) {
-        if self.sleep_requested {
+        if self.sleep_requested || self.afk_paused() {
             return;
         }
 
-        // Keep the AFK timer refreshed while "open all locks" is running:
-        // the whole operation can easily exceed the AFK timeout.
-        if self.lock_open_all_running {
-            self.mark_user_activity();
-            return;
-        }
-
+        self.idle_secs = self.idle_secs.saturating_add(1);
         if self.afk_seconds_left() == 0 {
             self.request_sleep();
         }
     }
 
+    /// Opening every lock can take longer than the AFK timeout, so the
+    /// countdown stops for the whole run.
+    fn afk_paused(&self) -> bool {
+        self.lock_open_all_running
+    }
+
     fn afk_seconds_left(&self) -> u32 {
-        let elapsed = Self::current_unix_seconds().saturating_sub(self.last_user_activity_secs);
-        if elapsed >= AFK_TIMEOUT_SECS {
-            0
-        } else {
-            (AFK_TIMEOUT_SECS - elapsed) as u32
-        }
+        AFK_TIMEOUT_SECS.saturating_sub(self.idle_secs)
     }
 
     fn mark_user_activity(&mut self) {
-        self.last_user_activity_secs = Self::current_unix_seconds();
+        self.idle_secs = 0;
     }
 
     fn request_sleep(&mut self) {
@@ -1208,10 +1249,6 @@ impl App {
                 log::warn!("service-menu sleep failed: {}", err);
             }
         });
-    }
-
-    fn current_unix_seconds() -> i64 {
-        (jetbeep_core::unix_time() / 1_000_000) as i64
     }
 
     fn required_keypad_mask(&self) -> u32 {
@@ -1326,6 +1363,222 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::rc::Rc;
+    use ::core::cell::Cell;
+    use lvgl_dsl::c_bindings::{spy_drain, LvCall};
+    use lvgl_dsl::test_support::SpyFixture;
+
+    #[test]
+    fn clock_tick_updates_labels_without_rebuilding_screen() {
+        let _spy = SpyFixture::new();
+        let mut app = App::new();
+        app.render();
+        spy_drain();
+
+        app.handle_event(AppEvent::Tick);
+
+        let calls = spy_drain();
+        let count = |pred: fn(&LvCall) -> bool| calls.iter().filter(|c| pred(c)).count();
+        // Deleting the widget under a finger makes LVGL drop the click
+        // (lv_indev_wait_release), so a tick must never rebuild the tree.
+        assert_eq!(count(|c| matches!(c, LvCall::ObjDelete { .. })), 0, "tick deleted widgets");
+        assert_eq!(
+            count(|c| matches!(
+                c,
+                LvCall::ObjCreate { .. } | LvCall::LabelCreate { .. } | LvCall::ButtonCreate { .. }
+            )),
+            0,
+            "tick created widgets"
+        );
+        assert_eq!(
+            count(|c| matches!(c, LvCall::LabelSetText { .. })),
+            3,
+            "tick must refresh exactly the date, AFK and time labels"
+        );
+    }
+
+    #[test]
+    fn keypad_test_opened_from_keypad_starts_from_scratch() {
+        let _spy = SpyFixture::new();
+        let mut app = App::new();
+        app.render();
+
+        app.handle_event(AppEvent::Keypad(KeypadKey::Digit(1)));
+        app.handle_event(AppEvent::Keypad(KeypadKey::Digit(5)));
+        app.handle_event(AppEvent::Keypad(KeypadKey::Hash));
+        assert_eq!(app.current_route(), Route::MainMenu);
+
+        app.handle_event(AppEvent::Keypad(KeypadKey::Digit(1)));
+
+        assert_eq!(app.current_route(), Route::KeypadTest);
+        assert_eq!(app.action_text(), "Missing: 1 2 3 4 5 6 7 8 9 * 0 #");
+    }
+
+    fn open_all_step(index: usize) -> AppEvent {
+        AppEvent::LockOpenAllStepResult {
+            board_id: 1,
+            lock_id: index as u32 + 1,
+            ok: true,
+            message: String::from("opened"),
+            index,
+            total: 27,
+        }
+    }
+
+    #[test]
+    fn afk_countdown_follows_ticks_not_wall_clock() {
+        let _spy = SpyFixture::new();
+        let mut app = App::new();
+        app.render();
+
+        for _ in 0..5 {
+            app.handle_event(AppEvent::Tick);
+        }
+
+        assert_eq!(app.afk_countdown_text(), "AFK: 55s");
+    }
+
+    #[test]
+    fn user_activity_restarts_afk_countdown() {
+        let _spy = SpyFixture::new();
+        let mut app = App::new();
+        app.render();
+        for _ in 0..30 {
+            app.handle_event(AppEvent::Tick);
+        }
+
+        app.handle_event(AppEvent::Open(Route::LockTests));
+
+        assert_eq!(app.afk_countdown_text(), "AFK: 60s");
+    }
+
+    #[test]
+    fn afk_is_paused_while_open_all_runs() {
+        let _spy = SpyFixture::new();
+        let mut app = App::new();
+        app.render();
+        app.lock_open_all_running = true;
+
+        for _ in 0..(AFK_TIMEOUT_SECS + 10) {
+            app.handle_event(AppEvent::Tick);
+        }
+
+        assert!(!app.sleep_requested);
+        assert_eq!(app.afk_countdown_text(), "AFK: paused");
+    }
+
+    #[test]
+    fn open_all_step_updates_page_without_rebuilding_screen() {
+        let _spy = SpyFixture::new();
+        let mut app = App::new();
+        app.render();
+        app.handle_event(AppEvent::Open(Route::LockTests));
+        app.handle_event(AppEvent::Open(Route::LockTestsOpenAll));
+        app.lock_open_all_running = true;
+        spy_drain();
+
+        app.handle_event(open_all_step(0));
+        app.handle_event(AppEvent::LockOpenAllFinished);
+
+        let calls = spy_drain();
+        let count = |pred: fn(&LvCall) -> bool| calls.iter().filter(|c| pred(c)).count();
+        assert_eq!(count(|c| matches!(c, LvCall::ObjDelete { .. })), 0, "step deleted widgets");
+        assert_eq!(
+            count(|c| matches!(
+                c,
+                LvCall::ObjCreate { .. } | LvCall::LabelCreate { .. } | LvCall::ButtonCreate { .. }
+            )),
+            0,
+            "step created widgets"
+        );
+        assert!(
+            count(|c| matches!(c, LvCall::LabelSetText { .. })) > 0,
+            "step must refresh the page labels"
+        );
+        assert!(!app.lock_open_all_running());
+        assert_eq!(app.lock_open_all_summary_text(), "Last run: 1/27 | 1 OK | 0 ERROR");
+    }
+
+    /// Opens the open-all page with a run in progress, without spawning the
+    /// real lock task. Returns the run's cancel flag.
+    fn app_with_open_all_running() -> (App, Rc<Cell<bool>>) {
+        let mut app = App::new();
+        app.render();
+        app.handle_event(AppEvent::Open(Route::LockTests));
+        app.handle_event(AppEvent::Open(Route::LockTestsOpenAll));
+        let cancel = Rc::new(Cell::new(false));
+        app.lock_open_all_running = true;
+        app.lock_open_all_cancel = Some(cancel.clone());
+        app.render();
+        (app, cancel)
+    }
+
+    fn label_texts(calls: &[LvCall]) -> Vec<String> {
+        calls
+            .iter()
+            .filter_map(|c| match c {
+                LvCall::LabelSetText { text_bytes, .. } => {
+                    Some(String::from_utf8_lossy(text_bytes).trim_end_matches('\0').into())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn back_button_reads_stop_while_open_all_runs() {
+        let _spy = SpyFixture::new();
+        let (mut app, _cancel) = app_with_open_all_running();
+        spy_drain();
+
+        app.render();
+        assert!(label_texts(&spy_drain()).iter().any(|t| t == "Stop (*)"));
+
+        app.handle_event(AppEvent::LockOpenAllFinished);
+        assert!(label_texts(&spy_drain()).iter().any(|t| t == "Back (*)"));
+    }
+
+    #[test]
+    fn first_back_stops_open_all_and_second_leaves_page() {
+        let _spy = SpyFixture::new();
+        let (mut app, cancel) = app_with_open_all_running();
+        app.handle_event(open_all_step(0));
+
+        app.handle_event(AppEvent::Back);
+
+        assert!(cancel.get(), "the lock task must be told to stop");
+        assert!(!app.lock_open_all_running());
+        assert_eq!(app.current_route(), Route::LockTestsOpenAll);
+        assert_eq!(app.lock_open_all_summary_text(), "Last run: 1/27 | 1 OK | 0 ERROR");
+
+        app.handle_event(AppEvent::Back);
+
+        assert_eq!(app.current_route(), Route::LockTests);
+    }
+
+    #[test]
+    fn keypad_star_stops_open_all_like_back() {
+        let _spy = SpyFixture::new();
+        let (mut app, cancel) = app_with_open_all_running();
+
+        app.handle_event(AppEvent::Keypad(KeypadKey::Star));
+
+        assert!(cancel.get());
+        assert_eq!(app.current_route(), Route::LockTestsOpenAll);
+    }
+
+    #[test]
+    fn open_all_result_arriving_after_stop_is_ignored() {
+        let _spy = SpyFixture::new();
+        let (mut app, _cancel) = app_with_open_all_running();
+        app.handle_event(AppEvent::Back);
+
+        app.handle_event(open_all_step(0));
+        app.handle_event(AppEvent::LockOpenAllFinished);
+
+        assert_eq!(app.lock_open_all_ok, 0);
+        assert!(!app.lock_open_all_results_text().contains("Done"));
+    }
 
     #[test]
     fn status_vector_uses_one_based_lock_ids() {
